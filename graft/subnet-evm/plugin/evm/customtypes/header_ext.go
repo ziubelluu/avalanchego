@@ -41,6 +41,12 @@ type HeaderExtra struct {
 	BlockGasCost     *big.Int
 	TimeMilliseconds *uint64
 	MinDelayExcess   *acp226.DelayExcess
+	// InitialTxHash is the tx root the block had when it was created.
+	// Normally it's the same as Header.TxHash, but after a redaction TxHash
+	// changes while this one keeps the old value (it's the "old link" of
+	// the dual link). It's rlp:"optional" so the old blocks that don't have
+	// it decode with nil.
+	InitialTxHash *common.Hash
 }
 
 // HeaderTimeMilliseconds returns the header timestamp in milliseconds.
@@ -117,6 +123,10 @@ func (h *HeaderExtra) PostCopy(dst *ethtypes.Header) {
 		e := *h.MinDelayExcess
 		cp.MinDelayExcess = &e
 	}
+	if h.InitialTxHash != nil {
+		v := *h.InitialTxHash
+		cp.InitialTxHash = &v
+	}
 	SetHeaderExtra(dst, cp)
 }
 
@@ -168,12 +178,14 @@ func (h *HeaderSerializable) updateFromExtras(extras *HeaderExtra) {
 	h.BlockGasCost = extras.BlockGasCost
 	h.TimeMilliseconds = extras.TimeMilliseconds
 	h.MinDelayExcess = (*uint64)(extras.MinDelayExcess)
+	h.InitialTxHash = extras.InitialTxHash
 }
 
 func (h *HeaderSerializable) updateToExtras(extras *HeaderExtra) {
 	extras.BlockGasCost = h.BlockGasCost
 	extras.TimeMilliseconds = h.TimeMilliseconds
 	extras.MinDelayExcess = (*acp226.DelayExcess)(h.MinDelayExcess)
+	extras.InitialTxHash = h.InitialTxHash
 }
 
 // NOTE: both generators currently do not support type aliases.
@@ -226,6 +238,10 @@ type HeaderSerializable struct {
 	// MinDelayExcess was added by Granite and is ignored in legacy headers.
 	// We use *uint64 type here to avoid rlpgen generating incorrect code
 	MinDelayExcess *uint64 `json:"minDelayExcess" rlp:"optional"`
+
+	// InitialTxHash was added for block redaction, legacy headers don't
+	// have it. It must stay the last optional field.
+	InitialTxHash *common.Hash `json:"initialTransactionsRoot" rlp:"optional"`
 }
 
 // field type overrides for gencodec

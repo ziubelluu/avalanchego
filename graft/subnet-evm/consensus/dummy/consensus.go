@@ -330,6 +330,13 @@ func (eng *DummyEngine) FinalizeAndAssemble(chain consensus.ChainHeaderReader, h
 	// commit the final state root
 	header.Root = state.IntermediateRoot(chain.Config().IsEIP158(header.Number))
 
+	// Compute the tx root and save a copy in InitialTxHash. In a block that
+	// was never redacted the two values are the same, they only become
+	// different after a redaction.
+	header.TxHash = types.DeriveSha(types.Transactions(txs), trie.NewStackTrie(nil))
+	initialTxHash := header.TxHash
+	headerExtra.InitialTxHash = &initialTxHash
+
 	// Header seems complete, assemble into a block and return
 	return types.NewBlock(
 		header, txs, uncles, receipts, trie.NewStackTrie(nil),

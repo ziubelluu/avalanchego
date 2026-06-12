@@ -39,6 +39,7 @@ func (h HeaderSerializable) MarshalJSON() ([]byte, error) {
 		ParentBeaconRoot *common.Hash     `json:"parentBeaconBlockRoot" rlp:"optional"`
 		TimeMilliseconds *hexutil.Uint64  `json:"timestampMilliseconds" rlp:"optional"`
 		MinDelayExcess   *hexutil.Uint64  `json:"minDelayExcess" rlp:"optional"`
+		InitialTxHash    *common.Hash     `json:"initialTransactionsRoot" rlp:"optional"`
 		Hash             common.Hash      `json:"hash"`
 	}
 	var enc HeaderSerializable
@@ -64,6 +65,7 @@ func (h HeaderSerializable) MarshalJSON() ([]byte, error) {
 	enc.ParentBeaconRoot = h.ParentBeaconRoot
 	enc.TimeMilliseconds = (*hexutil.Uint64)(h.TimeMilliseconds)
 	enc.MinDelayExcess = (*hexutil.Uint64)(h.MinDelayExcess)
+	enc.InitialTxHash = h.InitialTxHash
 	enc.Hash = h.Hash()
 	return json.Marshal(&enc)
 }
@@ -93,6 +95,7 @@ func (h *HeaderSerializable) UnmarshalJSON(input []byte) error {
 		ParentBeaconRoot *common.Hash      `json:"parentBeaconBlockRoot" rlp:"optional"`
 		TimeMilliseconds *hexutil.Uint64   `json:"timestampMilliseconds" rlp:"optional"`
 		MinDelayExcess   *hexutil.Uint64   `json:"minDelayExcess" rlp:"optional"`
+		InitialTxHash    *common.Hash      `json:"initialTransactionsRoot" rlp:"optional"`
 	}
 	var dec HeaderSerializable
 	if err := json.Unmarshal(input, &dec); err != nil {
@@ -176,6 +179,9 @@ func (h *HeaderSerializable) UnmarshalJSON(input []byte) error {
 	}
 	if dec.MinDelayExcess != nil {
 		h.MinDelayExcess = (*uint64)(dec.MinDelayExcess)
+	}
+	if dec.InitialTxHash != nil {
+		h.InitialTxHash = dec.InitialTxHash
 	}
 	return nil
 }
