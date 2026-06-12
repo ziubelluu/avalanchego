@@ -51,6 +51,7 @@ import (
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/internal/version"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/params"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/plugin/evm/customtypes"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact"
 	"github.com/ava-labs/avalanchego/vms/evm/sync/customrawdb"
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/common/lru"
@@ -967,7 +968,8 @@ func (bc *BlockChain) ValidateCanonicalChain() error {
 		}
 
 		parent := bc.GetHeaderByHash(current.ParentHash)
-		if parent.Hash() != current.ParentHash {
+		// Accept also the old link of a redacted parent, not only the normal hash.
+		if !redact.ValidParentLink(current.ParentHash, parent) {
 			return fmt.Errorf("getBlockByHash retrieved parent block with incorrect hash, found %s, expected: %s", parent.Hash().String(), current.ParentHash.String())
 		}
 		current = parent
@@ -1326,9 +1328,11 @@ func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 	defer bc.blockProcFeed.Send(false)
 
 	// Do a sanity check that the provided chain is actually ordered and linked.
+	// The parent link is checked with the dual-link rule (redacted parents are
+	// reachable through their old link).
 	for i := 1; i < len(chain); i++ {
 		block, prev := chain[i], chain[i-1]
-		if block.NumberU64() != prev.NumberU64()+1 || block.ParentHash() != prev.Hash() {
+		if block.NumberU64() != prev.NumberU64()+1 || !redact.ValidParentLink(block.ParentHash(), prev.Header()) {
 			log.Error("Non contiguous block insert",
 				"number", block.Number(),
 				"hash", block.Hash(),
