@@ -334,8 +334,7 @@ func (eng *DummyEngine) FinalizeAndAssemble(chain consensus.ChainHeaderReader, h
 	// was never redacted the two values are the same, they only become
 	// different after a redaction.
 	header.TxHash = types.DeriveSha(types.Transactions(txs), trie.NewStackTrie(nil))
-	initialTxHash := header.TxHash
-	headerExtra.InitialTxHash = &initialTxHash
+	headerExtra.InitialTxHash = customheader.InitialTxHash(configExtra, header.TxHash, header.Time)
 
 	// Header seems complete, assemble into a block and return
 	return types.NewBlock(
