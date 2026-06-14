@@ -65,6 +65,8 @@ import (
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/plugin/evm/config"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/plugin/evm/extension"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/precompileconfig"
+	warpprecompile "github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/contracts/warp"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/warp"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/network/p2p"
@@ -624,6 +626,16 @@ func (vm *VM) initializeChain(lastAcceptedHash common.Hash, ethConfig ethconfig.
 	vm.eth.SetEtherbase(ethConfig.Miner.Etherbase)
 	vm.txPool = vm.eth.TxPool()
 	vm.blockChain = vm.eth.BlockChain()
+	// Accept redacted parent links only if a stored proof reaches the validator
+	// stake quorum.
+	vm.blockChain.SetRedactionPolicy(redact.NewCommitteePolicy(
+		vm.chaindb,
+		redact.NewWarpSetFunc(vm.ctx.ValidatorState, vm.ctx.SubnetID),
+		vm.ctx.NetworkID,
+		vm.ctx.ChainID,
+		warpprecompile.WarpDefaultQuorumNumerator,
+		warpprecompile.WarpQuorumDenominator,
+	))
 	vm.miner = vm.eth.Miner()
 	lastAccepted := vm.blockChain.LastAcceptedBlock()
 	feeConfig, _, err := vm.blockChain.GetFeeConfigAt(lastAccepted.Header())

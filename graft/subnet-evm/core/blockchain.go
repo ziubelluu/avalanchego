@@ -134,6 +134,11 @@ var (
 	errCacheConfigNotSpecified = errors.New("must specify cache config")
 	errInvalidOldChain         = errors.New("invalid old chain")
 	errInvalidNewChain         = errors.New("invalid new chain")
+
+	// errCannotReexecuteRedactedBlock is returned when the insert path is asked
+	// to re-execute a redacted block: replaying its body would not match the
+	// Root already stored in the header.
+	errCannotReexecuteRedactedBlock = errors.New("cannot re-execute a redacted block")
 )
 
 const (
@@ -351,6 +356,10 @@ type BlockChain struct {
 	processor Processor // Block transaction processor interface
 	vmConfig  vm.Config
 
+	// redactionPolicy decides if a redacted parent link is accepted. Defaults
+	// to the always-approve stub; the VM injects the real committee policy.
+	redactionPolicy redact.Policy
+
 	lastAccepted *types.Block // Prevents reorgs past this height
 
 	senderCacher *TxSenderCacher
@@ -449,6 +458,7 @@ func NewBlockChain(
 		acceptorQueue:       make(chan *types.Block, cacheConfig.AcceptorQueueLimit),
 		quit:                make(chan struct{}),
 		acceptedLogsCache:   NewFIFOCache[common.Hash, [][]*types.Log](cacheConfig.AcceptedCacheSize),
+		redactionPolicy:     redact.DefaultPolicy,
 	}
 	bc.stateCache = state.NewDatabaseWithNodeDB(bc.db, bc.triedb)
 	bc.validator = NewBlockValidator(chainConfig, bc, engine)
@@ -524,6 +534,12 @@ func NewBlockChain(
 		bc.txIndexer = newTxIndexer(bc.cacheConfig.TransactionHistory, bc)
 	}
 	return bc, nil
+}
+
+// SetRedactionPolicy sets the policy used to accept redacted parent links. The
+// VM calls it with the real committee policy; the default is the stub.
+func (bc *BlockChain) SetRedactionPolicy(p redact.Policy) {
+	bc.redactionPolicy = p
 }
 
 // writeBlockAcceptedIndices writes any indices that must be persisted for accepted block.
@@ -873,6 +889,25 @@ func (bc *BlockChain) writeHeadBlock(block *types.Block) {
 	bc.currentBlock.Store(block.Header())
 }
 
+// redactedIndices reads the proof for [identity] and returns the set of
+// redacted positions. The bool is false when no usable proof is stored, so
+// callers fall back to tolerating the whole redacted block.
+func (bc *BlockChain) redactedIndices(identity common.Hash) (map[uint64]bool, bool) {
+	raw, err := redact.ReadRedactionProof(bc.db, identity)
+	if err != nil {
+		return nil, false
+	}
+	proof, err := redact.ProofFromBytes(raw)
+	if err != nil {
+		return nil, false
+	}
+	set := make(map[uint64]bool, len(proof.Proposal.RedactedIndices))
+	for _, i := range proof.Proposal.RedactedIndices {
+		set[i] = true
+	}
+	return set, true
+}
+
 // ValidateCanonicalChain confirms a canonical chain is well-formed.
 func (bc *BlockChain) ValidateCanonicalChain() error {
 	// Ensure all accepted blocks are fully processed
@@ -883,7 +918,32 @@ func (bc *BlockChain) ValidateCanonicalChain() error {
 	log.Info("Beginning to validate canonical chain", "startBlock", current.Number)
 
 	for current.Hash() != bc.genesisBlock.Hash() {
-		blkByHash := bc.GetBlockByHash(current.Hash())
+		// A redacted block is stored under its old-link hash, which differs from
+		// its self-hash. For unredacted blocks the two are equal, so OldLink is
+		// the right storage key in both cases.
+		identity := redact.OldLink(current)
+		isRedacted := identity != current.Hash()
+
+		// For a redacted block, get the exact redacted positions from the proof
+		// so we still fully check the untouched txs. No proof -> tolerate all.
+		var (
+			redactedSet   map[uint64]bool
+			redactedKnown bool
+		)
+		if isRedacted {
+			redactedSet, redactedKnown = bc.redactedIndices(identity)
+		}
+		redactedAt := func(i int) bool {
+			if !isRedacted {
+				return false
+			}
+			if !redactedKnown {
+				return true // proof/indices unavailable: tolerate the whole block
+			}
+			return redactedSet[uint64(i)]
+		}
+
+		blkByHash := bc.GetBlockByHash(identity)
 		if blkByHash == nil {
 			return fmt.Errorf("couldn't find block by hash %s at height %d", current.Hash().String(), current.Number)
 		}
@@ -898,7 +958,7 @@ func (bc *BlockChain) ValidateCanonicalChain() error {
 			return fmt.Errorf("blockByNumber returned a block with unexpected hash: %s, expected: %s", blkByNumber.Hash().String(), current.Hash().String())
 		}
 
-		hdrByHash := bc.GetHeaderByHash(current.Hash())
+		hdrByHash := bc.GetHeaderByHash(identity)
 		if hdrByHash == nil {
 			return fmt.Errorf("couldn't find block header by hash %s at height %d", current.Hash().String(), current.Number)
 		}
@@ -914,7 +974,7 @@ func (bc *BlockChain) ValidateCanonicalChain() error {
 		}
 
 		// Lookup the full block to get the transactions
-		block := bc.GetBlock(current.Hash(), current.Number.Uint64())
+		block := bc.GetBlock(identity, current.Number.Uint64())
 		if block == nil {
 			log.Error("Current block not found in database", "block", current.Number, "hash", current.Hash())
 			return fmt.Errorf("current block missing: #%d [%x..]", current.Number, current.Hash().Bytes()[:4])
@@ -927,35 +987,44 @@ func (bc *BlockChain) ValidateCanonicalChain() error {
 		shouldIndexTxs := !bc.cacheConfig.SkipTxIndexing &&
 			(bc.cacheConfig.TransactionHistory == 0 || bc.lastAccepted.NumberU64() < current.Number.Uint64()+bc.cacheConfig.TransactionHistory)
 		if current.Number.Uint64() <= bc.lastAccepted.NumberU64() && shouldIndexTxs {
-			// Ensure that all of the transactions have been stored correctly in the canonical
-			// chain
+			// Check the transactions are indexed correctly. A redacted tx has a
+			// new hash that was never indexed, so we tolerate a missing lookup
+			// (and skip the position check), but still check the untouched txs.
 			for txIndex, tx := range txs {
 				txLookup, _, _ := bc.GetTransactionLookup(tx.Hash())
 				if txLookup == nil {
+					if redactedAt(txIndex) {
+						continue
+					}
 					return fmt.Errorf("failed to find transaction %s", tx.Hash().String())
 				}
-				if txLookup.BlockHash != current.Hash() {
-					return fmt.Errorf("tx lookup returned with incorrect block hash: %s, expected: %s", txLookup.BlockHash.String(), current.Hash().String())
+				if txLookup.BlockHash != identity {
+					return fmt.Errorf("tx lookup returned with incorrect block hash: %s, expected: %s", txLookup.BlockHash.String(), identity.String())
 				}
 				if txLookup.BlockIndex != current.Number.Uint64() {
 					return fmt.Errorf("tx lookup returned with incorrect block index: %d, expected: %d", txLookup.BlockIndex, current.Number)
 				}
-				if txLookup.Index != uint64(txIndex) {
+				if !redactedAt(txIndex) && txLookup.Index != uint64(txIndex) {
 					return fmt.Errorf("tx lookup returned with incorrect transaction index: %d, expected: %d", txLookup.Index, txIndex)
 				}
 			}
 		}
 
-		blkReceipts := bc.GetReceiptsByHash(current.Hash())
-		if blkReceipts.Len() != len(txs) {
+		// We don't touch the receipts on redaction. We always check each one
+		// belongs to this block (BlockHash/BlockNumber); the tx-hash/count link
+		// to the body is only checked for the non-redacted positions.
+		blkReceipts := bc.GetReceiptsByHash(identity)
+		if !isRedacted && blkReceipts.Len() != len(txs) {
 			return fmt.Errorf("found %d transaction receipts, expected %d", blkReceipts.Len(), len(txs))
 		}
+		receiptsAligned := blkReceipts.Len() == len(txs)
 		for index, txReceipt := range blkReceipts {
-			if txReceipt.TxHash != txs[index].Hash() {
+			tolerate := isRedacted && (!receiptsAligned || redactedAt(index))
+			if !tolerate && txReceipt.TxHash != txs[index].Hash() {
 				return fmt.Errorf("transaction receipt mismatch, expected %s, but found: %s", txs[index].Hash().String(), txReceipt.TxHash.String())
 			}
-			if txReceipt.BlockHash != current.Hash() {
-				return fmt.Errorf("transaction receipt had block hash %s, but expected %s", txReceipt.BlockHash.String(), current.Hash().String())
+			if txReceipt.BlockHash != identity {
+				return fmt.Errorf("transaction receipt had block hash %s, but expected %s", txReceipt.BlockHash.String(), identity.String())
 			}
 			if txReceipt.BlockNumber.Uint64() != current.Number.Uint64() {
 				return fmt.Errorf("transaction receipt had block number %d, but expected %d", txReceipt.BlockNumber.Uint64(), current.Number)
@@ -969,7 +1038,7 @@ func (bc *BlockChain) ValidateCanonicalChain() error {
 
 		parent := bc.GetHeaderByHash(current.ParentHash)
 		// Accept also the old link of a redacted parent, not only the normal hash.
-		if !redact.ValidParentLink(current.ParentHash, parent) {
+		if !redact.ValidParentLinkWithPolicy(context.Background(), current.ParentHash, parent, bc.redactionPolicy) {
 			return fmt.Errorf("getBlockByHash retrieved parent block with incorrect hash, found %s, expected: %s", parent.Hash().String(), current.ParentHash.String())
 		}
 		current = parent
@@ -1332,7 +1401,7 @@ func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 	// reachable through their old link).
 	for i := 1; i < len(chain); i++ {
 		block, prev := chain[i], chain[i-1]
-		if block.NumberU64() != prev.NumberU64()+1 || !redact.ValidParentLink(block.ParentHash(), prev.Header()) {
+		if block.NumberU64() != prev.NumberU64()+1 || !redact.ValidParentLinkWithPolicy(context.Background(), block.ParentHash(), prev.Header(), bc.redactionPolicy) {
 			log.Error("Non contiguous block insert",
 				"number", block.Number(),
 				"hash", block.Hash(),
@@ -1372,6 +1441,13 @@ func (bc *BlockChain) InsertBlockManual(block *types.Block, writes bool) error {
 }
 
 func (bc *BlockChain) insertBlock(block *types.Block, writes bool) error {
+	// Don't re-execute a redacted block: replaying its body wouldn't match the
+	// Root already stored in the header. Refuse it here with a clear error
+	// instead of failing later with a confusing state-root mismatch.
+	if redact.OldLink(block.Header()) != block.Hash() {
+		return fmt.Errorf("%w: %s (number %d)", errCannotReexecuteRedactedBlock, block.Hash(), block.NumberU64())
+	}
+
 	start := time.Now()
 	bc.senderCacher.Recover(types.MakeSigner(bc.chainConfig, block.Number(), block.Time()), block.Transactions())
 	blockSignatureRecoveryTimer.Inc(time.Since(start).Milliseconds())
