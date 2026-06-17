@@ -542,6 +542,42 @@ func (bc *BlockChain) SetRedactionPolicy(p redact.Policy) {
 	bc.redactionPolicy = p
 }
 
+// RedactStored applies an approved redaction to the running chain: it rewrites
+// the block body with newTxs, stores the proof, fixes the tx index and drops
+// the cached old block so the node serves the redacted one without a restart.
+// The proof is assumed already produced and verified by the caller.
+func (bc *BlockChain) RedactStored(original *types.Block, newTxs []*types.Transaction, proof []byte) (*types.Block, error) {
+	redacted := redact.RedactBlock(original, newTxs)
+	if err := redact.Persist(bc.db, original.Hash(), redacted); err != nil {
+		return nil, err
+	}
+	if err := redact.WriteRedactionProof(bc.db, original.Hash(), proof); err != nil {
+		return nil, err
+	}
+	redact.ReindexRedacted(bc.db, original, redacted)
+
+	oldTxHashes := make([]common.Hash, len(original.Transactions()))
+	for i, tx := range original.Transactions() {
+		oldTxHashes[i] = tx.Hash()
+	}
+	bc.PurgeBlockCaches(original.Hash(), oldTxHashes)
+	return redacted, nil
+}
+
+// PurgeBlockCaches drops the in-memory caches for a block.
+// A redaction writes to the database directly, so a running node
+// must call this to stop serving the old block from memory. 
+// originalTxHashes are the hashes of the transactions before the redaction.
+func (bc *BlockChain) PurgeBlockCaches(blockHash common.Hash, originalTxHashes []common.Hash) {
+	bc.blockCache.Remove(blockHash)
+	bc.bodyCache.Remove(blockHash)
+	bc.receiptsCache.Remove(blockHash)
+	bc.hc.headerCache.Remove(blockHash)
+	for _, h := range originalTxHashes {
+		bc.txLookupCache.Remove(h)
+	}
+}
+
 // writeBlockAcceptedIndices writes any indices that must be persisted for accepted block.
 // This includes the following:
 // - transaction lookup indices
