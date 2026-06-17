@@ -5,7 +5,6 @@ package redact
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/ava-labs/libevm/rlp"
 
@@ -25,11 +24,6 @@ type Proof struct {
 	Proposal     Proposal
 	SignerBitSet []byte
 	AggSignature [bls.SignatureLen]byte
-}
-
-// String returns a human-readable summary of the proof.
-func (p *Proof) String() string {
-	return fmt.Sprintf("Proof{%s, signers: %d bytes}", p.Proposal.String(), len(p.SignerBitSet))
 }
 
 // Bytes is the RLP encoding stored in the proof DB.

@@ -4,8 +4,6 @@
 package redact
 
 import (
-	"fmt"
-
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/crypto"
 	"github.com/ava-labs/libevm/rlp"
@@ -19,12 +17,6 @@ type Proposal struct {
 	NewTxHash       common.Hash
 	PChainHeight    uint64
 	RedactedIndices []uint64
-}
-
-// String returns a human-readable summary of the proposal.
-func (p *Proposal) String() string {
-	return fmt.Sprintf("Proposal{originalHash: %s, newTxHash: %s, pChainHeight: %d, redactedIndices: %v}",
-		p.OriginalHash, p.NewTxHash, p.PChainHeight, p.RedactedIndices)
 }
 
 // Bytes is the RLP encoding that the validators sign over.
