@@ -83,3 +83,75 @@ func (p *Admin) GetVMConfig(_ *http.Request, _ *struct{}, reply *client.ConfigRe
 	reply.Config = &p.vm.config
 	return nil
 }
+
+// RedactStateDeposit runs a chameleon redaction of a deposit. Needs the trapdoor
+// in the env and an approved committee proof, else it fails and changes nothing.
+func (p *Admin) RedactStateDeposit(r *http.Request, args *client.RedactStateDepositArgs, reply *client.RedactStateDepositReply) error {
+	log.Info("Admin: RedactStateDeposit called", "block", args.OriginalBlockHash, "id", args.DepositID)
+
+	p.vm.vmLock.Lock()
+	defer p.vm.vmLock.Unlock()
+
+	hash, rPrime, err := p.vm.RedactStateDeposit(
+		r.Context(),
+		args.OriginalBlockHash,
+		args.DepositContract,
+		args.DepositID,
+		args.Blob,
+		args.Randomness,
+		args.NewBlob,
+		args.Proof,
+		args.PChainHeight,
+	)
+	if err != nil {
+		return err
+	}
+	reply.RedactedBlockHash = hash
+	reply.NewRandomness = rPrime
+	return nil
+}
+
+// RedactTransactions runs a tx-channel (old/new-link) redaction of a block.
+// Needs an approved committee proof, else it fails and changes nothing.
+func (p *Admin) RedactTransactions(r *http.Request, args *client.RedactTransactionsArgs, reply *client.RedactTransactionsReply) error {
+	log.Info("Admin: RedactTransactions called", "block", args.OriginalBlockHash)
+
+	p.vm.vmLock.Lock()
+	defer p.vm.vmLock.Unlock()
+
+	hash, err := p.vm.RedactTransactions(r.Context(), args.OriginalBlockHash, args.Proof)
+	if err != nil {
+		return err
+	}
+	reply.RedactedBlockHash = hash
+	return nil
+}
+
+// ApproveRedaction records this validator's manual approval of a redaction
+// proposal, so the node signs it when the committee aggregator asks.
+func (p *Admin) ApproveRedaction(_ *http.Request, args *client.ApproveRedactionArgs, reply *client.ApproveRedactionReply) error {
+	log.Info("Admin: ApproveRedaction called", "kind", args.Kind)
+
+	p.vm.vmLock.Lock()
+	defer p.vm.vmLock.Unlock()
+
+	id, err := p.vm.ApproveRedaction(args.Kind, args.Proposal)
+	if err != nil {
+		return err
+	}
+	reply.MessageID = id
+	return nil
+}
+
+// CollectRedactionProof gathers the committee signatures into a proof. It talks
+// to the network, so it doesn't take the VM lock.
+func (p *Admin) CollectRedactionProof(r *http.Request, args *client.CollectRedactionProofArgs, reply *client.CollectRedactionProofReply) error {
+	log.Info("Admin: CollectRedactionProof called", "kind", args.Kind)
+
+	proofBytes, err := p.vm.CollectRedactionProof(r.Context(), args.Kind, args.Proposal)
+	if err != nil {
+		return err
+	}
+	reply.Proof = proofBytes
+	return nil
+}

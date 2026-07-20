@@ -9,6 +9,9 @@ import (
 
 	"golang.org/x/exp/slog"
 
+	"github.com/ava-labs/libevm/common"
+	"github.com/ava-labs/libevm/common/hexutil"
+
 	"github.com/ava-labs/avalanchego/api"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/plugin/evm/config"
 	"github.com/ava-labs/avalanchego/ids"
@@ -94,6 +97,63 @@ func (c *client) SetLogLevel(ctx context.Context, level slog.Level, options ...r
 
 type ConfigReply struct {
 	Config *config.Config `json:"config"`
+}
+
+// RedactStateDepositArgs are the inputs for a state redaction. Byte fields are
+// hex; Proof is the RLP of a redact.StateProof (the committee's signature).
+type RedactStateDepositArgs struct {
+	OriginalBlockHash common.Hash    `json:"originalBlockHash"`
+	DepositContract   common.Address `json:"depositContract"`
+	DepositID         common.Hash    `json:"depositID"`
+	Blob              hexutil.Bytes  `json:"blob"`
+	Randomness        hexutil.Bytes  `json:"randomness"`
+	NewBlob           hexutil.Bytes  `json:"newBlob"`
+	Proof             hexutil.Bytes  `json:"proof"`
+	PChainHeight      uint64         `json:"pChainHeight"`
+}
+
+// RedactStateDepositReply returns the redacted block hash and the forged
+// randomness r' (the new opening that still commits to the digest).
+type RedactStateDepositReply struct {
+	RedactedBlockHash common.Hash   `json:"redactedBlockHash"`
+	NewRandomness     hexutil.Bytes `json:"newRandomness"`
+}
+
+// RedactTransactionsArgs are the inputs for a tx-channel redaction. Proof is the
+// RLP of a redact.Proof (block, new tx root, redacted positions).
+type RedactTransactionsArgs struct {
+	OriginalBlockHash common.Hash   `json:"originalBlockHash"`
+	Proof             hexutil.Bytes `json:"proof"`
+}
+
+// RedactTransactionsReply returns the hash of the redacted block.
+type RedactTransactionsReply struct {
+	RedactedBlockHash common.Hash `json:"redactedBlockHash"`
+}
+
+// ApproveRedactionArgs records a validator's manual approval of a redaction
+// proposal. Kind is "tx" or "state"; Proposal is the RLP of the (state) proposal.
+type ApproveRedactionArgs struct {
+	Kind     string        `json:"kind"`
+	Proposal hexutil.Bytes `json:"proposal"`
+}
+
+// ApproveRedactionReply returns the warp message ID the committee aggregates over.
+type ApproveRedactionReply struct {
+	MessageID common.Hash `json:"messageID"`
+}
+
+// CollectRedactionProofArgs asks the node to aggregate the committee signatures
+// for a proposal. Kind is "tx" or "state"; Proposal is the RLP of the proposal.
+type CollectRedactionProofArgs struct {
+	Kind     string        `json:"kind"`
+	Proposal hexutil.Bytes `json:"proposal"`
+}
+
+// CollectRedactionProofReply returns the aggregated proof bytes (RLP of a
+// redact.Proof or redact.StateProof) ready to feed to a redaction trigger.
+type CollectRedactionProofReply struct {
+	Proof hexutil.Bytes `json:"proof"`
 }
 
 // GetVMConfig returns the current config of the VM
