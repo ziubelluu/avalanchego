@@ -65,6 +65,7 @@ import (
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/plugin/evm/config"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/plugin/evm/extension"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/precompileconfig"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
 	warpprecompile "github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/contracts/warp"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/warp"
@@ -636,6 +637,8 @@ func (vm *VM) initializeChain(lastAcceptedHash common.Hash, ethConfig ethconfig.
 		warpprecompile.WarpDefaultQuorumNumerator,
 		warpprecompile.WarpQuorumDenominator,
 	))
+	// Reject a redacted block whose new (blob', r') no longer gives the digest in state.
+	vm.blockChain.SetRedactionContentVerifier(redactabledeposit.VerifyRedactedBlock)
 	vm.miner = vm.eth.Miner()
 	lastAccepted := vm.blockChain.LastAcceptedBlock()
 	feeConfig, _, err := vm.blockChain.GetFeeConfigAt(lastAccepted.Header())

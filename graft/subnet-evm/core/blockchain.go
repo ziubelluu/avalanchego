@@ -360,6 +360,10 @@ type BlockChain struct {
 	// to the always-approve stub; the VM injects the real committee policy.
 	redactionPolicy redact.Policy
 
+	// redactionContentVerifier, if set, re-checks that a redacted block's content
+	// still matches what's in state (e.g. CH(blob', r') == D). Nil = off.
+	redactionContentVerifier RedactionContentVerifier
+
 	lastAccepted *types.Block // Prevents reorgs past this height
 
 	senderCacher *TxSenderCacher
@@ -542,12 +546,36 @@ func (bc *BlockChain) SetRedactionPolicy(p redact.Policy) {
 	bc.redactionPolicy = p
 }
 
+// RedactionContentVerifier re-checks that a redacted block's content still
+// matches what's in state (e.g. the chameleon opening still gives the digest).
+// It's injected so the generic chain code doesn't need to know the scheme.
+type RedactionContentVerifier func(block *types.Block, statedb *state.StateDB) error
+
+// SetRedactionContentVerifier sets the verifier run over redacted blocks.
+// Nil (the default) turns it off.
+func (bc *BlockChain) SetRedactionContentVerifier(v RedactionContentVerifier) {
+	bc.redactionContentVerifier = v
+}
+
 // RedactStored applies an approved redaction to the running chain: it rewrites
 // the block body with newTxs, stores the proof, fixes the tx index and drops
 // the cached old block so the node serves the redacted one without a restart.
 // The proof is assumed already produced and verified by the caller.
 func (bc *BlockChain) RedactStored(original *types.Block, newTxs []*types.Transaction, proof []byte) (*types.Block, error) {
 	redacted := redact.RedactBlock(original, newTxs)
+
+	// Don't persist a redaction whose new content doesn't match the digest in
+	// state (CH(blob', r') != D). The digest never changes, so head state has it.
+	if bc.redactionContentVerifier != nil {
+		statedb, err := bc.State()
+		if err != nil {
+			return nil, err
+		}
+		if err := bc.redactionContentVerifier(redacted, statedb); err != nil {
+			return nil, fmt.Errorf("refusing to apply redaction: %w", err)
+		}
+	}
+
 	if err := redact.Persist(bc.db, original.Hash(), redacted); err != nil {
 		return nil, err
 	}
@@ -974,7 +1002,7 @@ func (bc *BlockChain) ValidateCanonicalChain() error {
 				return false
 			}
 			if !redactedKnown {
-				return true // proof/indices unavailable: tolerate the whole block
+				return true
 			}
 			return redactedSet[uint64(i)]
 		}
@@ -1050,10 +1078,10 @@ func (bc *BlockChain) ValidateCanonicalChain() error {
 		// belongs to this block (BlockHash/BlockNumber); the tx-hash/count link
 		// to the body is only checked for the non-redacted positions.
 		blkReceipts := bc.GetReceiptsByHash(identity)
-		if !isRedacted && blkReceipts.Len() != len(txs) {
+		receiptsAligned := blkReceipts.Len() == len(txs)
+		if !isRedacted && !receiptsAligned {
 			return fmt.Errorf("found %d transaction receipts, expected %d", blkReceipts.Len(), len(txs))
 		}
-		receiptsAligned := blkReceipts.Len() == len(txs)
 		for index, txReceipt := range blkReceipts {
 			tolerate := isRedacted && (!receiptsAligned || redactedAt(index))
 			if !tolerate && txReceipt.TxHash != txs[index].Hash() {
@@ -1064,6 +1092,23 @@ func (bc *BlockChain) ValidateCanonicalChain() error {
 			}
 			if txReceipt.BlockNumber.Uint64() != current.Number.Uint64() {
 				return fmt.Errorf("transaction receipt had block number %d, but expected %d", txReceipt.BlockNumber.Uint64(), current.Number)
+			}
+		}
+
+		// For a redacted block, check its new content still matches the digest in
+		// state. The old-link trick leaves the body unpinned, so this ties it back
+		// to the digest and rejects a tampered opening.
+		//
+		// We read the HEAD state, not the (maybe pruned) historical one: the digest
+		// and the public key never change, so head has the same values. This way
+		// the check also works on pruned nodes.
+		if isRedacted && bc.redactionContentVerifier != nil {
+			statedb, err := bc.State()
+			if err != nil {
+				return fmt.Errorf("redacted block #%d: cannot load state for content check: %w", current.Number, err)
+			}
+			if verr := bc.redactionContentVerifier(block, statedb); verr != nil {
+				return fmt.Errorf("redacted block #%d failed content verification: %w", current.Number, verr)
 			}
 		}
 
