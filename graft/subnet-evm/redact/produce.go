@@ -65,3 +65,42 @@ func ProduceProof(
 		AggSignature: bss.Signature,
 	}, nil
 }
+
+// ProduceStateProof is like ProduceProof but for a StateProposal: it gets the
+// committee to sign and packs the aggregated signature into a StateProof. Same
+// Aggregator, so the real warp aggregator works too.
+func ProduceStateProof(
+	ctx context.Context,
+	agg Aggregator,
+	proposal *StateProposal,
+	networkID uint32,
+	sourceChainID ids.ID,
+	vdrs validators.WarpSet,
+	quorumNum uint64,
+	quorumDen uint64,
+) (*StateProof, error) {
+	unsigned, err := warp.NewUnsignedMessage(networkID, sourceChainID, proposal.Bytes())
+	if err != nil {
+		return nil, err
+	}
+	msg := &warp.Message{
+		UnsignedMessage: *unsigned,
+		Signature:       &warp.BitSetSignature{},
+	}
+
+	signed, _, _, err := agg.AggregateSignatures(ctx, msg, nil, vdrs.Validators, quorumNum, quorumDen)
+	if err != nil {
+		return nil, err
+	}
+
+	bss, ok := signed.Signature.(*warp.BitSetSignature)
+	if !ok {
+		return nil, fmt.Errorf("unexpected signature type %T", signed.Signature)
+	}
+
+	return &StateProof{
+		Proposal:     *proposal,
+		SignerBitSet: bss.Signers,
+		AggSignature: bss.Signature,
+	}, nil
+}

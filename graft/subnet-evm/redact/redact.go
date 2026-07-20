@@ -5,6 +5,7 @@ package redact
 
 import (
 	"encoding/binary"
+	"fmt"
 
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/core/rawdb"
@@ -35,6 +36,30 @@ func RedactBlock(original *types.Block, newTxs []*types.Transaction) *types.Bloc
 		Transactions: newTxs,
 		Uncles:       original.Uncles(),
 	})
+}
+
+// RebuildTxWithData copies [orig] but with new calldata [newData], reusing the
+// old signature. So you can rewrite a tx's data without the sender's key (the
+// redacted tx isn't re-executed). Only dynamic-fee txs are supported.
+func RebuildTxWithData(orig *types.Transaction, newData []byte) (*types.Transaction, error) {
+	if orig.Type() != types.DynamicFeeTxType {
+		return nil, fmt.Errorf("redact: unsupported tx type %d (want dynamic-fee)", orig.Type())
+	}
+	v, r, s := orig.RawSignatureValues()
+	return types.NewTx(&types.DynamicFeeTx{
+		ChainID:    orig.ChainId(),
+		Nonce:      orig.Nonce(),
+		GasTipCap:  orig.GasTipCap(),
+		GasFeeCap:  orig.GasFeeCap(),
+		Gas:        orig.Gas(),
+		To:         orig.To(),
+		Value:      orig.Value(),
+		Data:       newData,
+		AccessList: orig.AccessList(),
+		V:          v,
+		R:          r,
+		S:          s,
+	}), nil
 }
 
 // Persist stores the redacted header and body under the original hash, so

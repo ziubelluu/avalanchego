@@ -8,13 +8,30 @@ import (
 	"github.com/ava-labs/libevm/ethdb"
 )
 
-// redactionProofPrefix is our own key namespace, multi-byte so it can't clash
-// with the single-byte libevm rawdb prefixes ('h', 'b', 'r', ...).
 var redactionProofPrefix = []byte("redaction-proof-")
+
+var stateRedactionProofPrefix = []byte("state-redaction-proof-")
 
 // proofKey = prefix + original block hash.
 func proofKey(originalHash common.Hash) []byte {
 	return append(append([]byte{}, redactionProofPrefix...), originalHash.Bytes()...)
+}
+
+// stateProofKey = prefix + proposal hash. State proofs are keyed by the proposal
+// hash, not the block hash, because the committee approves the intent (not a
+// specific post-forge body).
+func stateProofKey(proposalHash common.Hash) []byte {
+	return append(append([]byte{}, stateRedactionProofPrefix...), proposalHash.Bytes()...)
+}
+
+// WriteStateRedactionProof saves the proof for a state proposal.
+func WriteStateRedactionProof(db ethdb.KeyValueWriter, proposalHash common.Hash, proof []byte) error {
+	return db.Put(stateProofKey(proposalHash), proof)
+}
+
+// ReadStateRedactionProof reads back the proof for a state proposal.
+func ReadStateRedactionProof(db ethdb.KeyValueReader, proposalHash common.Hash) ([]byte, error) {
+	return db.Get(stateProofKey(proposalHash))
 }
 
 // WriteRedactionProof stores the proof bytes for the block OriginalHash.

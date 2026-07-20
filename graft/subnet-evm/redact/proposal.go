@@ -28,6 +28,15 @@ func (p *Proposal) Bytes() []byte {
 	return b
 }
 
+// ProposalFromBytes decodes a proposal produced by Bytes.
+func ProposalFromBytes(b []byte) (*Proposal, error) {
+	p := new(Proposal)
+	if err := rlp.DecodeBytes(b, p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
 // Hash is the keccak256 of the bytes. This is the vote message.
 func (p *Proposal) Hash() common.Hash {
 	return crypto.Keccak256Hash(p.Bytes())

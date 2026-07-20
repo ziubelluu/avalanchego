@@ -4,11 +4,13 @@
 package redact
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math/big"
 	"testing"
 
+	"github.com/ava-labs/libevm/common"
 	"github.com/stretchr/testify/require"
 
 	"github.com/ava-labs/avalanchego/network/p2p/acp118"
@@ -87,5 +89,41 @@ func TestProduceProofAggregatorError(t *testing.T) {
 	agg := &fakeAggregator{byIndex: byIndex, err: errors.New("not enough stake")}
 
 	_, err := ProduceProof(context.Background(), agg, sampleProposal(), constants.UnitTestID, proofSourceChainID, ws, 2, 3)
+	require.Error(t, err)
+}
+
+func sampleStateProposal() *StateProposal {
+	return &StateProposal{
+		OriginalHash: common.Hash{0x01},
+		DepositAddr:  common.Address{0x0a},
+		ID:           common.Hash{0x02},
+		Digest:       bytes.Repeat([]byte{0x03}, 48),
+		NewBlobHash:  common.Hash{0x04},
+		PChainHeight: 7,
+	}
+}
+
+// A produced state proof verifies against the same committee and quorum.
+func TestProduceStateProofVerifies(t *testing.T) {
+	t.Parallel()
+
+	ws, byIndex := makeCommittee(t, 3)
+	agg := &fakeAggregator{byIndex: byIndex, signWith: []int{0, 1, 2}}
+	sp := sampleStateProposal()
+
+	proof, err := ProduceStateProof(context.Background(), agg, sp, constants.UnitTestID, proofSourceChainID, ws, 2, 3)
+	require.NoError(t, err)
+	require.Equal(t, *sp, proof.Proposal)
+	require.NoError(t, VerifyStateProof(proof, constants.UnitTestID, proofSourceChainID, ws, 2, 3))
+}
+
+// An aggregator error is propagated for state proofs too.
+func TestProduceStateProofAggregatorError(t *testing.T) {
+	t.Parallel()
+
+	ws, byIndex := makeCommittee(t, 3)
+	agg := &fakeAggregator{byIndex: byIndex, err: errors.New("not enough stake")}
+
+	_, err := ProduceStateProof(context.Background(), agg, sampleStateProposal(), constants.UnitTestID, proofSourceChainID, ws, 2, 3)
 	require.Error(t, err)
 }
