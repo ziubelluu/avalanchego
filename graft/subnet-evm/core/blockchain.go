@@ -628,6 +628,7 @@ func (bc *BlockChain) batchBlockAcceptedIndices(batch ethdb.Batch, b *types.Bloc
 	if err := customrawdb.WriteAcceptorTip(batch, b.Hash()); err != nil {
 		return fmt.Errorf("%w: failed to write acceptor tip key", err)
 	}
+	rawdb.WriteFinalizedBlockHash(batch, b.Hash())
 	return nil
 }
 
@@ -940,7 +941,7 @@ func (bc *BlockChain) writeHeadBlock(block *types.Block) {
 	// Add the block to the canonical chain number scheme and mark as the head
 	batch := bc.db.NewBatch()
 	rawdb.WriteCanonicalHash(batch, block.Hash(), block.NumberU64())
-
+	rawdb.WriteHeadBlockHash(batch, block.Hash())
 	rawdb.WriteHeadBlockHash(batch, block.Hash())
 	rawdb.WriteHeadHeaderHash(batch, block.Hash())
 
@@ -2391,6 +2392,7 @@ func (bc *BlockChain) ResetToStateSyncedBlock(block *types.Block) error {
 	}
 	rawdb.WriteHeadBlockHash(batch, block.Hash())
 	rawdb.WriteHeadHeaderHash(batch, block.Hash())
+	rawdb.WriteHeadFastBlockHash(batch, block.Hash())
 	customrawdb.WriteSnapshotBlockHash(batch, block.Hash())
 	rawdb.WriteSnapshotRoot(batch, block.Root())
 	if err := customrawdb.WriteSyncPerformed(batch, block.NumberU64()); err != nil {

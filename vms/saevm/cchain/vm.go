@@ -16,28 +16,32 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ava-labs/libevm/core"
 	"github.com/ava-labs/libevm/core/rawdb"
-	"github.com/ava-labs/libevm/core/txpool/legacypool"
-	"github.com/ava-labs/libevm/triedb"
 
-	"github.com/ava-labs/avalanchego/api/metrics"
+	_ "embed"
+
 	"github.com/ava-labs/avalanchego/database/prefixdb"
 	"github.com/ava-labs/avalanchego/graft/coreth/plugin/evm/customtypes"
 	"github.com/ava-labs/avalanchego/graft/evm/utils/rpc"
 	"github.com/ava-labs/avalanchego/network/p2p"
 	"github.com/ava-labs/avalanchego/network/p2p/gossip"
 	"github.com/ava-labs/avalanchego/snow"
-	"github.com/ava-labs/avalanchego/snow/engine/common"
+	"github.com/ava-labs/avalanchego/utils"
 	"github.com/ava-labs/avalanchego/utils/bloom"
+	"github.com/ava-labs/avalanchego/utils/constants"
 	"github.com/ava-labs/avalanchego/vms/evm/database"
 	"github.com/ava-labs/avalanchego/vms/saevm/blocks"
 	"github.com/ava-labs/avalanchego/vms/saevm/cchain/state"
 	"github.com/ava-labs/avalanchego/vms/saevm/cchain/txpool"
+	"github.com/ava-labs/avalanchego/vms/saevm/cchain/warp"
 	"github.com/ava-labs/avalanchego/vms/saevm/sae"
-	"github.com/ava-labs/avalanchego/vms/saevm/saedb"
 
+	apimetrics "github.com/ava-labs/avalanchego/api/metrics"
 	avadb "github.com/ava-labs/avalanchego/database"
+	corethparams "github.com/ava-labs/avalanchego/graft/coreth/params"
+	snowcommon "github.com/ava-labs/avalanchego/snow/engine/common"
+	ethcommon "github.com/ava-labs/libevm/common"
+	ethparams "github.com/ava-labs/libevm/params"
 )
 
 // VM wraps an [sae.VM] with the cross-chain pieces specific to the C-Chain.
@@ -48,8 +52,13 @@ type VM struct {
 	pullGossipPeriod time.Duration
 	pushGossipPeriod time.Duration
 
+	// now is the clock provided to the [sae.VM] and is used for block building.
+	now func() time.Time
+
 	ctx          *snow.Context
+	chainConfig  *ethparams.ChainConfig
 	state        *state.State
+	metrics      *metrics
 	txpool       *txpool.Txpool
 	gossipSet    *gossip.BloomSet[*gossipTx]
 	pushGossiper *gossip.PushGossiper[*gossipTx]
@@ -58,6 +67,8 @@ type VM struct {
 	// depends on another resource, it MUST be added AFTER the resource it
 	// depends on.
 	onClose []func(context.Context) error
+
+	lastWaitForEvent utils.Atomic[time.Time]
 }
 
 var ethDBPrefix = []byte("ethdb")
@@ -70,8 +81,8 @@ func (vm *VM) Initialize(
 	genesisBytes []byte,
 	_ []byte,
 	configBytes []byte,
-	_ []*common.Fx,
-	appSender common.AppSender,
+	_ []*snowcommon.Fx,
+	appSender snowcommon.AppSender,
 ) (retErr error) {
 	defer func() {
 		if retErr != nil {
@@ -81,24 +92,30 @@ func (vm *VM) Initialize(
 
 	vm.ctx = snowCtx
 
-	// TODO(StephenButtolph): Allow minimal user configuration via configBytes.
-	_ = configBytes
+	userConfig, err := parseConfig(configBytes, snowCtx.NetworkID)
+	if err != nil {
+		return fmt.Errorf("parsing user config: %w", err)
+	}
+	warpMessages, err := userConfig.WarpMessages()
+	if err != nil {
+		return fmt.Errorf("parsing warp messages: %w", err)
+	}
 
 	// [prefixdb.NewNested] is used because coreth used to be run as a plugin.
 	// This meant that the database's prefix was not compacted, because the
 	// provided database was wrapped by the rpcchainvm.
 	ethDB := rawdb.NewDatabase(database.New(prefixdb.NewNested(ethDBPrefix, avaDB)))
-	trieDBConfig := triedb.HashDefaults
-	trieDB := triedb.NewDatabase(ethDB, trieDBConfig)
 
-	// TODO(StephenButtolph): Replace this with Coreth's genesis format.
-	genesis := new(core.Genesis)
-	if err := json.Unmarshal(genesisBytes, genesis); err != nil {
-		return fmt.Errorf("unmarshalling genesis: %w", err)
-	}
-	chainConfig, _, err := core.SetupGenesisBlock(ethDB, trieDB, genesis)
+	genesis, err := parseGenesis(snowCtx, genesisBytes)
 	if err != nil {
-		return fmt.Errorf("setting up genesis block: %w", err)
+		return fmt.Errorf("parsing genesis: %w", err)
+	}
+	vm.chainConfig = genesis.Config
+
+	saeConfig := userConfig.saeConfig(vm.now)
+	tdbCfg := saeConfig.DBConfig.TrieDBConfig(snowCtx.ChainDataDir, snowCtx.Log)
+	if err := genesis.setup(ethDB, tdbCfg); err != nil {
+		return fmt.Errorf("setting up genesis: %w", err)
 	}
 
 	vm.state, err = state.New(snowCtx, avaDB)
@@ -109,30 +126,35 @@ func (vm *VM) Initialize(
 		return vm.state.Close()
 	})
 
+	reg, err := apimetrics.MakeAndRegister(snowCtx.Metrics, "cchain")
+	if err != nil {
+		return fmt.Errorf("making metrics: %w", err)
+	}
+	vm.metrics, err = newMetrics(reg)
+	if err != nil {
+		return fmt.Errorf("registering cchain metrics: %w", err)
+	}
+
 	pendingTxs := txpool.NewPending()
+	warpStorage := warp.NewStorage(avaDB, warpMessages...)
 	hooks := newHooks(
 		snowCtx,
 		vm.state,
+		vm.chainConfig,
 		pendingTxs,
+		warpStorage,
+		vm.now,
+		userConfig.desired(),
+		vm.metrics,
 	)
-	mempoolConfig := legacypool.DefaultConfig
-	// Treat all transactions equally regardless of submission source — no
-	// preferential admission or pricing for locally-submitted txs.
-	mempoolConfig.NoLocals = true
-	saeConfig := sae.Config{
-		MempoolConfig: mempoolConfig,
-		DBConfig: saedb.Config{
-			TrieDBConfig: trieDBConfig,
-		},
-	}
-	vm.VM, err = sae.NewVM(ctx, hooks, saeConfig, snowCtx, chainConfig, ethDB, genesis.ToBlock(), appSender)
+	vm.VM, err = sae.NewVM(ctx, hooks, saeConfig, snowCtx, vm.chainConfig, ethDB, appSender)
 	if err != nil {
 		return fmt.Errorf("creating SAE VM: %w", err)
 	}
 	vm.onClose = append(vm.onClose, vm.VM.Shutdown)
 
 	const maxTxPoolSize = 1024
-	vm.txpool, err = txpool.New(snowCtx, chainConfig, pendingTxs, vm.VM, maxTxPoolSize)
+	vm.txpool, err = txpool.New(snowCtx, vm.chainConfig, pendingTxs, vm.VM, maxTxPoolSize)
 	if err != nil {
 		return fmt.Errorf("creating txpool: %w", err)
 	}
@@ -141,10 +163,6 @@ func (vm *VM) Initialize(
 		return nil
 	})
 
-	reg, err := metrics.MakeAndRegister(snowCtx.Metrics, "cchain")
-	if err != nil {
-		return fmt.Errorf("making metrics: %w", err)
-	}
 	bloomMetrics, err := bloom.NewMetrics("gossip_bloom", reg)
 	if err != nil {
 		return fmt.Errorf("creating gossip bloom metrics: %w", err)
@@ -194,21 +212,54 @@ func (vm *VM) Initialize(
 		gossipWG.Wait()
 		return nil
 	})
-
+	if err := registerWarpHandler(vm.VM, warpStorage, snowCtx.WarpSigner); err != nil {
+		return fmt.Errorf("registering warp signature handler: %w", err)
+	}
 	return nil
 }
 
-// errExtDataHashMismatch is returned by [VM.ParseBlock] when a block's extData
-// does not hash to the ExtDataHash committed in its header.
-var errExtDataHashMismatch = errors.New("extData hash does not match header")
+var (
+	// errInvalidBlockVersion is returned by [VM.ParseBlock] when a block's
+	// BlockBodyExtra carries a Version other than 0, the only supported version.
+	errInvalidBlockVersion = errors.New("invalid block version")
+	// errExtDataUnexpectedHash is returned by [VM.ParseBlock] when a block's
+	// extData does not correspond to the hardcoded ExtDataHash.
+	errExtDataUnexpectedHash = errors.New("extData hash does not match expected value")
+	// errExtDataHashMismatch is returned by [VM.ParseBlock] when a block's
+	// extData does not hash to the ExtDataHash committed in its header.
+	errExtDataHashMismatch = errors.New("extData hash does not match header")
 
-// ParseBlock parses buf via the embedded SAE VM and additionally verifies that
-// the block's extData matches the ExtDataHash committed in the header.
+	//go:embed extdata-fuji.json
+	fujiExtDataHashes []byte
+	//go:embed extdata-mainnet.json
+	mainnetExtDataHashes []byte
+	extDataHashes        map[uint32]map[uint64]ethcommon.Hash
+)
+
+func init() {
+	mainnet := make(map[uint64]ethcommon.Hash)
+	if err := json.Unmarshal(mainnetExtDataHashes, &mainnet); err != nil {
+		panic(fmt.Errorf("unmarshalling extdata-mainnet.json: %w", err))
+	}
+	fuji := make(map[uint64]ethcommon.Hash)
+	if err := json.Unmarshal(fujiExtDataHashes, &fuji); err != nil {
+		panic(fmt.Errorf("unmarshalling extdata-fuji.json: %w", err))
+	}
+	extDataHashes = map[uint32]map[uint64]ethcommon.Hash{
+		constants.MainnetID: mainnet,
+		constants.FujiID:    fuji,
+	}
+}
+
+// ParseBlock parses buf via the embedded SAE VM and additionally performs the
+// C-Chain syntactic checks that the SAE VM is unaware of: that the block's
+// BlockBodyExtra Version is 0 (the only supported version) and that its extData
+// matches the ExtDataHash committed in the header.
 //
-// The block ID is the header hash, which commits ExtDataHash, so a block whose
-// extData body was tampered keeps the same ID. This override is the boundary
-// that rejects such blocks before they are accepted, persisted, or executed;
-// the SAE VM's own ParseBlock is unaware of the C-Chain extData concept.
+// The block ID is the header hash. The header neither hashes the body's Version
+// nor its extData bytes (it commits only ExtDataHash), so a block with a
+// tampered Version or extData keeps the same ID. This override is the boundary
+// that rejects such blocks before they are accepted, persisted, or executed.
 func (vm *VM) ParseBlock(ctx context.Context, buf []byte) (*blocks.Block, error) {
 	b, err := vm.VM.ParseBlock(ctx, buf)
 	if err != nil {
@@ -216,14 +267,30 @@ func (vm *VM) ParseBlock(ctx context.Context, buf []byte) (*blocks.Block, error)
 	}
 
 	eth := b.EthBlock()
-	extData := customtypes.BlockExtData(eth)
-	// TODO: Handle pre-AP1 blocks, which incorrectly did not set ExtDataHash.
-	// This isn't needed prior to Helicon, but will be required to fully remove
-	// coreth.
-	claimed := customtypes.GetHeaderExtra(eth.Header()).ExtDataHash
-	actual := customtypes.CalcExtDataHash(extData)
-	if claimed != actual {
-		return nil, fmt.Errorf("%w: header %s, extData %s", errExtDataHashMismatch, claimed, actual)
+	if version := customtypes.BlockVersion(eth); version != 0 {
+		return nil, fmt.Errorf("%w: %d", errInvalidBlockVersion, version)
+	}
+
+	var (
+		extData        = customtypes.BlockExtData(eth)
+		calculatedHash = customtypes.CalcExtDataHash(extData)
+		wantHeaderHash = calculatedHash
+	)
+	// For genesis and pre-ApricotPhase1 blocks, the header's ExtDataHash is
+	// expected to be empty with the actual data expected to be committed to in
+	// [extDataHashes].
+	if height := eth.NumberU64(); height == 0 || !corethparams.GetExtra(vm.chainConfig).IsApricotPhase1(eth.Time()) {
+		wantHash := customtypes.EmptyExtDataHash
+		if want, ok := extDataHashes[vm.ctx.NetworkID][height]; ok {
+			wantHash = want
+		}
+		if calculatedHash != wantHash {
+			return nil, fmt.Errorf("%w: have %x, want %x", errExtDataUnexpectedHash, calculatedHash, wantHash)
+		}
+		wantHeaderHash = ethcommon.Hash{}
+	}
+	if got := customtypes.GetHeaderExtra(eth.Header()).ExtDataHash; got != wantHeaderHash {
+		return nil, fmt.Errorf("%w: have %x, want %x", errExtDataHashMismatch, got, wantHeaderHash)
 	}
 	return b, nil
 }
@@ -254,35 +321,82 @@ func (vm *VM) CreateHandlers(ctx context.Context) (map[string]http.Handler, erro
 	return m, nil
 }
 
-// WaitForEvent waits for a transaction to be in the txpool or for the SAE VM to
-// produce an event.
-func (vm *VM) WaitForEvent(ctx context.Context) (common.Message, error) {
-	// TODO(StephenButtolph): Do not busy loop with [common.PendingTxs]. The
-	// txpools are cleared after block execution, so we may still have
-	// transactions in the txpool while blocks containing those transactions are
-	// processing.
+// earliestBuildTime returns the earliest wall-clock time at which a child of b
+// may be built.
+func earliestBuildTime(b *blocks.Block) time.Time {
+	h := b.Header()
+	return blockTime(h).Add(delayExponent(h).DelayDuration())
+}
 
-	// TODO(StephenButtolph): Wait until the minimum block delay has passed.
+// minWaitForEventDelay is the minimum spacing between consecutive
+// [VM.WaitForEvent] returns. 100ms isn't special here, it was selected as a
+// reasonable frequency for the engine to poll on whether to build a block or
+// not.
+const minWaitForEventDelay = 100 * time.Millisecond
 
-	ctx, cancel := context.WithCancel(ctx)
+// WaitForEvent waits until the ACP-226 minimum block delay since the preferred
+// block has elapsed, then waits for a transaction to be in the txpool or for
+// the SAE VM to produce an event.
+func (vm *VM) WaitForEvent(ctx context.Context) (snowcommon.Message, error) {
+	// Throttle to avoid busy looping: the txpools only clear after block
+	// execution, so pending txs can re-signal while their block is processing.
+	//
+	// TODO(JonathanOppenheimer): The txpool should track preference / reorgs so
+	// we don't need this throttle.
+	throttleUntil := vm.lastWaitForEvent.Get().Add(minWaitForEventDelay)
+
+	// Pace block building on the ACP-226 minimum block delay so that the event
+	// sources are consulted when we are actually willing to build.
+	buildTime := earliestBuildTime(vm.VM.GetPreference())
+
+	until := throttleUntil
+	if buildTime.After(until) {
+		until = buildTime
+	}
+	if err := vm.waitUntil(ctx, until); err != nil {
+		return 0, err
+	}
+
+	// Race the SAE event source against the cross-chain txpool. The winner's
+	// deferred cancel unblocks the loser, whose pending call returns and delivers
+	// its discarded result to the buffered channel, so neither goroutine leaks.
+	raceCtx, cancel := context.WithCancel(ctx)
 	type result struct {
-		msg common.Message
+		msg snowcommon.Message
 		err error
 	}
 	results := make(chan result, 2)
 	go func() {
 		defer cancel()
-		msg, err := vm.VM.WaitForEvent(ctx)
+		msg, err := vm.VM.WaitForEvent(raceCtx)
 		results <- result{msg, err}
 	}()
 	go func() {
 		defer cancel()
-		err := vm.txpool.AwaitTxs(ctx)
-		results <- result{common.PendingTxs, err}
+		err := vm.txpool.AwaitTxs(raceCtx)
+		results <- result{snowcommon.PendingTxs, err}
 	}()
 
 	r := <-results
+	if r.err == nil {
+		vm.lastWaitForEvent.Set(vm.now())
+	}
 	return r.msg, r.err
+}
+
+// waitUntil blocks until [VM.now] reaches t, returning early with the
+// cancellation cause if ctx is canceled first.
+func (vm *VM) waitUntil(ctx context.Context, t time.Time) error {
+	timeToWait := t.Sub(vm.now())
+	if timeToWait <= 0 {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-time.After(timeToWait):
+		return nil
+	}
 }
 
 // Shutdown releases every resource allocated by [VM.Initialize] in reverse
