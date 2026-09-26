@@ -40,7 +40,7 @@ func mustParseABI(s string) abi.ABI {
 	return parsed
 }
 
-// DigestLen is the byte length of a chameleon digest (compressed BLS12-381 G1).
+// DigestLen is the byte length of a chameleon digest.
 const DigestLen = chameleon.DigestLen
 
 var errInvalidInput = errors.New("redactabledeposit: failed to unpack store input")

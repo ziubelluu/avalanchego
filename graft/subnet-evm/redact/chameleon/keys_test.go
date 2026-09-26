@@ -5,6 +5,7 @@ package chameleon
 
 import (
 	"encoding/hex"
+	"math/big"
 	"testing"
 )
 
@@ -14,15 +15,18 @@ func TestTrapdoorRoundTrip(t *testing.T) {
 		t.Fatalf("KeyGen: %v", err)
 	}
 	b := tk.Bytes()
-	if len(b) != 32 {
-		t.Fatalf("trapdoor bytes len = %d, want 32", len(b))
+	if len(b) != TrapdoorLen {
+		t.Fatalf("trapdoor bytes len = %d, want %d", len(b), TrapdoorLen)
 	}
 	got, err := TrapdoorFromBytes(b)
 	if err != nil {
 		t.Fatalf("TrapdoorFromBytes: %v", err)
 	}
-	if !got.X.Equal(&tk.X) {
+	if got.X.Cmp(tk.X) != 0 {
 		t.Fatal("trapdoor did not survive a Bytes -> FromBytes round trip")
+	}
+	if got.y.Cmp(tk.y) != 0 {
+		t.Fatal("reloaded trapdoor derived a different y")
 	}
 }
 
@@ -32,15 +36,31 @@ func TestPublicKeyRoundTrip(t *testing.T) {
 		t.Fatalf("KeyGen: %v", err)
 	}
 	b := hk.Bytes()
-	if len(b) != 48 {
-		t.Fatalf("public key bytes len = %d, want 48", len(b))
+	if len(b) != PublicKeyLen {
+		t.Fatalf("public key bytes len = %d, want %d", len(b), PublicKeyLen)
 	}
 	got, err := PublicKeyFromBytes(b)
 	if err != nil {
 		t.Fatalf("PublicKeyFromBytes: %v", err)
 	}
-	if !got.Y.Equal(&hk.Y) {
+	if got.Y.Cmp(hk.Y) != 0 {
 		t.Fatal("public key did not survive a round trip")
+	}
+}
+
+func TestPublicKeyFromBytesRejectsGarbage(t *testing.T) {
+	bad := [][]byte{
+		nil,
+		make([]byte, 48),           // wrong size
+		make([]byte, PublicKeyLen), // y = 0
+		pad(big.NewInt(1)),         // y = 1
+		pad(P),                     // y = p
+		pad(new(big.Int).Add(P, big.NewInt(5))),
+	}
+	for _, b := range bad {
+		if _, err := PublicKeyFromBytes(b); err == nil {
+			t.Fatalf("PublicKeyFromBytes accepted %d bytes = %x...", len(b), b[:min(4, len(b))])
+		}
 	}
 }
 
@@ -56,16 +76,21 @@ func TestLoadTrapdoorHex(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadTrapdoorHex(%q): %v", s, err)
 		}
-		if !got.X.Equal(&tk.X) {
+		if got.X.Cmp(tk.X) != 0 {
 			t.Fatalf("LoadTrapdoorHex(%q) mismatch", s)
 		}
 	}
 }
 
 func TestLoadTrapdoorRejectsZeroAndGarbage(t *testing.T) {
-	zero := make([]byte, 32)
-	if _, err := TrapdoorFromBytes(zero); err == nil {
+	if _, err := TrapdoorFromBytes(make([]byte, TrapdoorLen)); err == nil {
 		t.Fatal("TrapdoorFromBytes accepted the zero scalar")
+	}
+	if _, err := TrapdoorFromBytes(make([]byte, 32)); err == nil {
+		t.Fatal("TrapdoorFromBytes accepted a 32-byte (old size) scalar")
+	}
+	if _, err := TrapdoorFromBytes(pad(Q)); err == nil {
+		t.Fatal("TrapdoorFromBytes accepted x = q")
 	}
 	if _, err := LoadTrapdoorHex("not-hex"); err == nil {
 		t.Fatal("LoadTrapdoorHex accepted non-hex input")
@@ -91,7 +116,7 @@ func TestLoadTrapdoorEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadTrapdoorEnv: %v", err)
 	}
-	if !got.X.Equal(&tk.X) {
+	if got.X.Cmp(tk.X) != 0 {
 		t.Fatal("LoadTrapdoorEnv mismatch")
 	}
 }

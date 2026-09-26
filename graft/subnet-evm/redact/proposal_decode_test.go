@@ -9,6 +9,8 @@ import (
 
 	"github.com/ava-labs/libevm/common"
 	"github.com/stretchr/testify/require"
+
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/chameleon"
 )
 
 func TestProposalFromBytesRoundTrip(t *testing.T) {
@@ -31,7 +33,7 @@ func TestStateProposalFromBytesRoundTrip(t *testing.T) {
 		OriginalHash: common.Hash{0x01},
 		DepositAddr:  common.Address{0x0a},
 		ID:           common.Hash{0x02},
-		Digest:       bytes.Repeat([]byte{0x03}, 48),
+		Digest:       bytes.Repeat([]byte{0x03}, chameleon.DigestLen),
 		NewBlobHash:  common.Hash{0x04},
 		PChainHeight: 7,
 	}

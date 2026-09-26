@@ -91,7 +91,7 @@ func TestStoreCommitsDigestOffStateBlob(t *testing.T) {
 	depositAddr := deployDeposit(t, backend, key, 0, hk.Bytes())
 
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, 32)
+	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
 	digest := chameleon.Hash(hk, blob, r)
 	require.Len(digest, redactabledeposit.DigestLen)
 	id := crypto.Keccak256Hash([]byte("deposit-1"))
@@ -146,7 +146,7 @@ func TestStoreRejectsInvalidOpening(t *testing.T) {
 	depositAddr := deployDeposit(t, backend, key, 0, hk.Bytes())
 
 	blob := bytes.Repeat([]byte{0xAB}, 64)
-	r := bytes.Repeat([]byte{0x07}, 32)
+	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
 	bogusDigest := bytes.Repeat([]byte{0xFF}, redactabledeposit.DigestLen)
 	require.NotEqual(chameleon.Hash(hk, blob, r), bogusDigest)
 	id := crypto.Keccak256Hash([]byte("bad-deposit"))
@@ -178,7 +178,7 @@ func TestStoreIsWriteOncePerID(t *testing.T) {
 	depositAddr := deployDeposit(t, backend, key, 0, hk.Bytes())
 
 	blob := bytes.Repeat([]byte{0xAB}, 64)
-	r := bytes.Repeat([]byte{0x07}, 32)
+	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
 	digest := chameleon.Hash(hk, blob, r)
 	id := crypto.Keccak256Hash([]byte("deposit-1"))
 

@@ -36,7 +36,7 @@ func TestNewForgerFromEnv(t *testing.T) {
 	require.NoError(t, err)
 
 	blob := []byte("original content")
-	r := make([]byte, 32)
+	r := make([]byte, chameleon.RandomnessLen)
 	r[0] = 1
 	digest := chameleon.Hash(hk, blob, r)
 	blobPrime := []byte{}

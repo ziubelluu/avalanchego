@@ -16,9 +16,12 @@ func benchInputs(tb testing.TB) (PublicKey, Trapdoor, []byte, []byte, []byte) {
 		tb.Fatalf("KeyGen: %v", err)
 	}
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, 32)
-	digest := Hash(hk, blob, r)
-	return hk, tk, blob, r, digest
+	rs, err := NewRandomness()
+	if err != nil {
+		tb.Fatalf("NewRandomness: %v", err)
+	}
+	digest := Hash(hk, blob, rs)
+	return hk, tk, blob, rs, digest
 }
 
 func BenchmarkKeyGen(b *testing.B) {
@@ -63,16 +66,15 @@ func BenchmarkForge(b *testing.B) {
 }
 
 // TestMeasureDigestVsBlob compares the digest we keep on state with the raw blob
-// size. The digest is always a 48-byte G1 point, so the state footprint stays
-// constant no matter how big the blob is.
+// size. The digest is a number mod q, so always 256 bytes no matter how big the
+// blob is.
 func TestMeasureDigestVsBlob(t *testing.T) {
-	hk, _, _, _, _ := benchInputs(t)
-	r := bytes.Repeat([]byte{0x07}, 32)
+	hk, _, _, rs, _ := benchInputs(t)
 
 	t.Logf("%-12s %-12s %-12s", "blobBytes", "digestBytes", "ratio")
 	for _, size := range []int{32, 256, 1024, 4096, 65536} {
 		blob := bytes.Repeat([]byte{0xAB}, size)
-		d := Hash(hk, blob, r)
+		d := Hash(hk, blob, rs)
 		if len(d) != DigestLen {
 			t.Fatalf("digest len = %d, want %d", len(d), DigestLen)
 		}

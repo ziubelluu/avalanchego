@@ -57,7 +57,7 @@ func TestMeasureRootStableAcrossRedactions(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, 32)
+	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
 	digest := chameleon.Hash(hk, blob, r)
 
 	block0, origTx, key, signer := buildStoreBlock(t, blob, r, digest)
@@ -95,7 +95,7 @@ func BenchmarkTxChannelRedactionApply(b *testing.B) {
 	hk, _, err := chameleon.KeyGen()
 	require.NoError(b, err)
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, 32)
+	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
 	digest := chameleon.Hash(hk, blob, r)
 
 	block0, origTx, key, signer := buildStoreBlock(b, blob, r, digest)
@@ -123,7 +123,7 @@ func BenchmarkStateRedactionApply(b *testing.B) {
 	require.NoError(b, err)
 	_ = hk
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, 32)
+	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
 	digest := chameleon.Hash(hk, blob, r)
 
 	block0, origTx, key, signer := buildStoreBlock(b, blob, r, digest)

@@ -193,7 +193,7 @@ func TestChameleonHappyPathE2E(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, 32)
+	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
 	digest := chameleon.Hash(hk, blob, r)
 	id := crypto.Keccak256Hash([]byte("deposit-1"))
 
@@ -285,14 +285,14 @@ func TestChameleonConsensusRejectsTamperedRedaction(t *testing.T) {
 	hk, _, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, 32)
+	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
 	digest := chameleon.Hash(hk, blob, r)
 	id := crypto.Keccak256Hash([]byte("deposit-1"))
 
 	dc := setupDepositChain(t, hk.Bytes(), id, blob, r, digest)
 
 	// Tamper: redact with a garbage r' that does NOT satisfy CH("", r') == D.
-	garbageR := bytes.Repeat([]byte{0xBA, 0xD0}, 16)
+	garbageR := bytes.Repeat([]byte{0x0B, 0x0A}, chameleon.RandomnessLen/2)
 	tamperedCalldata, err := redactabledeposit.RedactedStoreCalldata(dc.storeTx.Data(), []byte{}, garbageR)
 	require.NoError(err)
 	require.False(chameleon.Verify(hk, []byte{}, garbageR, digest))
@@ -321,7 +321,7 @@ func TestChameleonRedactStoredEnforcesOpening(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, 32)
+	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
 	digest := chameleon.Hash(hk, blob, r)
 	id := crypto.Keccak256Hash([]byte("deposit-1"))
 
@@ -330,7 +330,7 @@ func TestChameleonRedactStoredEnforcesOpening(t *testing.T) {
 	dc.bc.SetRedactionContentVerifier(redactabledeposit.VerifyRedactedBlock)
 
 	// Tampered opening: RedactStored refuses to apply it.
-	garbageCalldata, err := redactabledeposit.RedactedStoreCalldata(dc.storeTx.Data(), []byte{}, bytes.Repeat([]byte{0xBA}, 32))
+	garbageCalldata, err := redactabledeposit.RedactedStoreCalldata(dc.storeTx.Data(), []byte{}, bytes.Repeat([]byte{0x0B}, chameleon.RandomnessLen))
 	require.NoError(err)
 	_, err = dc.bc.RedactStored(dc.block0, dc.newTxsWithRedactedStore(dc.redactedStoreTx(t, garbageCalldata)), []byte("proof"))
 	require.Error(err, "RedactStored must refuse an invalid opening")
@@ -352,7 +352,7 @@ func TestChameleonForgeRejectedWithoutVote(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := []byte("the secret blob to redact")
-	r := bytes.Repeat([]byte{0x07}, 32)
+	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
 	digest := chameleon.Hash(hk, blob, r)
 	blobPrime := []byte{}
 
@@ -410,7 +410,7 @@ func TestChameleonTamperedOpeningRejected(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := []byte("original content")
-	r := bytes.Repeat([]byte{0x09}, 32)
+	r := bytes.Repeat([]byte{0x09}, chameleon.RandomnessLen)
 	digest := chameleon.Hash(hk, blob, r)
 	blobPrime := []byte{}
 
@@ -418,8 +418,10 @@ func TestChameleonTamperedOpeningRejected(t *testing.T) {
 	require.NoError(err)
 	require.True(chameleon.Verify(hk, blobPrime, rPrime, digest), "honest forge must verify")
 
+	// flip the last byte of r' (the first one could make it >= q, which
+	// fails for a different reason)
 	rTampered := bytes.Clone(rPrime)
-	rTampered[0] ^= 0xFF
+	rTampered[chameleon.ElementLen-1] ^= 0xFF
 	require.False(chameleon.Verify(hk, blobPrime, rTampered, digest), "tampered r' must not verify")
 	require.False(chameleon.Verify(hk, []byte("smuggled content"), rPrime, digest), "tampered blob' must not verify")
 }

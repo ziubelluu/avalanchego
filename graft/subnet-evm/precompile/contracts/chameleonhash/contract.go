@@ -20,8 +20,9 @@ var ChameleonHashRawABI string
 // ChameleonHashABI is the parsed interface of the precompile.
 var ChameleonHashABI = contract.ParseABI(ChameleonHashRawABI)
 
-// hashGasCost is the gas for one chameleon Hash (two point multiplications + a hash).
-var hashGasCost uint64 = 200_000
+// hashGasCost is the gas for one chameleon Hash (two 2048-bit modular
+// exponentiations + a hash).
+var hashGasCost uint64 = 800_000
 
 var errInvalidInput = errors.New("chameleonhash: failed to unpack input")
 

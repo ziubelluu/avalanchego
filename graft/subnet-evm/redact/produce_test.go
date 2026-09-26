@@ -19,6 +19,8 @@ import (
 	"github.com/ava-labs/avalanchego/utils/crypto/bls"
 	"github.com/ava-labs/avalanchego/utils/set"
 	"github.com/ava-labs/avalanchego/vms/platformvm/warp"
+
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/chameleon"
 )
 
 // The real aggregator must satisfy our interface.
@@ -97,7 +99,7 @@ func sampleStateProposal() *StateProposal {
 		OriginalHash: common.Hash{0x01},
 		DepositAddr:  common.Address{0x0a},
 		ID:           common.Hash{0x02},
-		Digest:       bytes.Repeat([]byte{0x03}, 48),
+		Digest:       bytes.Repeat([]byte{0x03}, chameleon.DigestLen),
 		NewBlobHash:  common.Hash{0x04},
 		PChainHeight: 7,
 	}

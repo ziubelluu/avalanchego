@@ -36,7 +36,7 @@ func TestApplyOffStateRedaction(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, 32)
+	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
 	digest := chameleon.Hash(hk, blob, r)
 	id := crypto.Keccak256Hash([]byte("deposit-1"))
 
@@ -113,7 +113,7 @@ func TestFindAndRebuildStoreTx(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := bytes.Repeat([]byte{0x11}, 64)
-	r := bytes.Repeat([]byte{0x22}, 32)
+	r := bytes.Repeat([]byte{0x22}, chameleon.RandomnessLen)
 	digest := chameleon.Hash(hk, blob, r)
 	id := crypto.Keccak256Hash([]byte("dep"))
 	to := common.Address{0x0d}

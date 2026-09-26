@@ -6,48 +6,59 @@ package chameleon
 import (
 	"encoding/hex"
 	"errors"
+	"math/big"
 	"os"
 	"strings"
 )
 
 var (
 	errBadTrapdoor      = errors.New("chameleon: malformed trapdoor")
-	errZeroTrapdoorLoad = errors.New("chameleon: trapdoor must be non-zero")
+	errZeroTrapdoorLoad = errors.New("chameleon: trapdoor must be in [1, q-1]")
 	errBadPublicKey     = errors.New("chameleon: malformed public key")
 	errNoSecret         = errors.New("chameleon: trapdoor secret not set")
 )
 
-// Bytes turns the trapdoor x into 32 bytes.
+// Bytes turns the trapdoor x into TrapdoorLen bytes (y is not saved).
 func (tk Trapdoor) Bytes() []byte {
-	b := tk.X.Bytes()
-	return b[:]
+	if tk.X == nil {
+		return make([]byte, TrapdoorLen)
+	}
+	return pad(tk.X)
 }
 
-// TrapdoorFromBytes reads a trapdoor from 32 bytes (and refuses 0).
+// TrapdoorFromBytes reads x from TrapdoorLen bytes (and refuses 0 or
+// anything >= q), then computes y.
 func TrapdoorFromBytes(b []byte) (Trapdoor, error) {
-	var tk Trapdoor
-	if err := tk.X.SetBytesCanonical(b); err != nil {
+	if len(b) != TrapdoorLen {
 		return Trapdoor{}, errBadTrapdoor
 	}
-	if tk.X.IsZero() {
+	x := new(big.Int).SetBytes(b)
+	if x.Sign() == 0 || x.Cmp(Q) >= 0 {
 		return Trapdoor{}, errZeroTrapdoorLoad
 	}
-	return tk, nil
+	return Trapdoor{X: x, y: new(big.Int).Exp(G, x, P)}, nil
 }
 
-// Bytes turns the public key into 48 bytes (compressed point).
+// Bytes turns the public key into PublicKeyLen bytes.
 func (hk PublicKey) Bytes() []byte {
-	b := hk.Y.Bytes()
-	return b[:]
+	if hk.Y == nil {
+		return make([]byte, PublicKeyLen)
+	}
+	return pad(hk.Y)
 }
 
-// PublicKeyFromBytes reads a public key from 48 bytes.
+// PublicKeyFromBytes reads y from PublicKeyLen bytes. It only checks
+// 1 < y < p: checking the subgroup too would be one more exponentiation on
+// every precompile call.
 func PublicKeyFromBytes(b []byte) (PublicKey, error) {
-	var hk PublicKey
-	if _, err := hk.Y.SetBytes(b); err != nil {
+	if len(b) != PublicKeyLen {
 		return PublicKey{}, errBadPublicKey
 	}
-	return hk, nil
+	y := new(big.Int).SetBytes(b)
+	if y.Cmp(big.NewInt(1)) <= 0 || y.Cmp(P) >= 0 {
+		return PublicKey{}, errBadPublicKey
+	}
+	return PublicKey{Y: y}, nil
 }
 
 // LoadTrapdoorHex reads the trapdoor from a hex string (0x prefix optional).

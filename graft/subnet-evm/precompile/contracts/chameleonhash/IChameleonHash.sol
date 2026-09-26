@@ -2,14 +2,14 @@
 pragma solidity ^0.8.24;
 
 /// @title Chameleon Hash Interface
-/// @notice A precompile that computes the chameleon hash (on BLS12-381 G1), so
-/// normal contracts can do it on-chain since Solidity can't. Like bn256/BLS.
+/// @notice A precompile that computes the chameleon hash (2048-bit numbers
+/// mod p), so normal contracts can do it on-chain since Solidity can't.
 interface IChameleonHash {
-    /// @notice Compute CH(m, r) = g^H(m) * y^r.
-    /// @param hk the 48-byte public key y.
+    /// @notice Compute h = r - (y^H(m||r) * g^s mod p) mod q.
+    /// @param hk the 256-byte public key y.
     /// @param m the message.
-    /// @param r the randomness.
-    /// @return digest the 48-byte digest.
+    /// @param r the randomness, r and s together (512 bytes).
+    /// @return digest the 256-byte digest.
     function hash(bytes calldata hk, bytes calldata m, bytes calldata r)
         external
         view

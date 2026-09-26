@@ -20,7 +20,7 @@ func TestChameleonHashPrecompileMatchesPrimitive(t *testing.T) {
 	hk, _, err := chameleon.KeyGen()
 	require.NoError(err)
 	m := []byte("the message")
-	r := bytes.Repeat([]byte{0x07}, 32)
+	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
 	want := chameleon.Hash(hk, m, r)
 
 	input, err := PackHash(hk.Bytes(), m, r)
@@ -37,7 +37,7 @@ func TestChameleonHashPrecompileMatchesPrimitive(t *testing.T) {
 
 // A malformed public key is rejected.
 func TestChameleonHashPrecompileBadKey(t *testing.T) {
-	input, err := PackHash([]byte{0x01, 0x02}, []byte("m"), bytes.Repeat([]byte{0x07}, 32))
+	input, err := PackHash([]byte{0x01, 0x02}, []byte("m"), bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen))
 	require.NoError(t, err)
 
 	_, _, err = ChameleonHashPrecompile.Run(nil, common.Address{}, ContractAddress, input, hashGasCost, false)

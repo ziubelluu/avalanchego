@@ -1,111 +1,156 @@
 // Copyright (C) 2019, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
+// Package chameleon is the chameleon hash from the Ateniese et al. paper
+// (section 3.4.2): h = r - (y^H(m||r) * g^s mod p) mod q, with trapdoor x
+// and public key y = g^x.
+//
+// Forge picks a fresh random k every time, so seeing the openings of a
+// redaction (the calldata before and after) doesn't give x away.
 package chameleon
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"math/big"
-
-	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
-	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 )
 
 var (
-	// x can't be 0, otherwise 1/x in Forge doesn't exist.
+	// x can't be 0 (y would be 1), and an empty Trapdoor has no x at all.
 	errZeroTrapdoor = errors.New("chameleon: trapdoor is zero")
-	// r couldn't be read as a number.
+	// r||s has the wrong length or r or s is >= q.
 	errBadRandomness = errors.New("chameleon: malformed randomness")
 )
 
-// DigestLen is the size of a digest: a compressed BLS12-381 G1 point, always 48 bytes.
-const DigestLen = 48
-
-// PublicKey is the public key y = g^x (a point on BLS12-381 G1).
+// PublicKey is y = g^x mod p.
 type PublicKey struct {
-	Y bls12381.G1Affine
+	Y *big.Int
 }
 
-// Trapdoor is the secret number x. Keep it local, never put it on chain.
+// Trapdoor is the secret x. Keep it local, never put it on chain.
+// y is here too so Forge doesn't have to recompute it from x every time.
 type Trapdoor struct {
-	X fr.Element
+	X *big.Int
+	y *big.Int
 }
 
-// hashToScalar turns a message into a number mod q: SHA-256(m) reduced mod q.
-func hashToScalar(m []byte) fr.Element {
-	sum := sha256.Sum256(m)
-	var e fr.Element
-	e.SetBytes(sum[:])
-	return e
+// hashToScalar is H(m||r): SHA-256 of m followed by r (r is always 256
+// bytes, so you know where m ends), read as a number. It's already < q.
+func hashToScalar(m []byte, r *big.Int) *big.Int {
+	h := sha256.New()
+	h.Write(m)
+	h.Write(pad(r))
+	return new(big.Int).SetBytes(h.Sum(nil))
 }
 
-// scalarFromBytes reads r as a number mod q.
-func scalarFromBytes(r []byte) fr.Element {
-	var e fr.Element
-	e.SetBytes(r)
-	return e
+// randScalar picks a random number in [1, q-1].
+func randScalar() (*big.Int, error) {
+	k, err := rand.Int(rand.Reader, new(big.Int).Sub(Q, big.NewInt(1)))
+	if err != nil {
+		return nil, err
+	}
+	return k.Add(k, big.NewInt(1)), nil
 }
 
-// bigOf turns a scalar into a big.Int (what gnark wants for scalar mult).
-func bigOf(e fr.Element) *big.Int {
-	return e.BigInt(new(big.Int))
+// splitRandomness reads r and s out of r||s. Both must be < q.
+func splitRandomness(rs []byte) (r, s *big.Int, ok bool) {
+	if len(rs) != RandomnessLen {
+		return nil, nil, false
+	}
+	r = new(big.Int).SetBytes(rs[:ElementLen])
+	s = new(big.Int).SetBytes(rs[ElementLen:])
+	if r.Cmp(Q) >= 0 || s.Cmp(Q) >= 0 {
+		return nil, nil, false
+	}
+	return r, s, true
+}
+
+// joinRandomness puts r and s back together.
+func joinRandomness(r, s *big.Int) []byte {
+	return append(pad(r), pad(s)...)
+}
+
+// NewRandomness picks a fresh (r, s). This is what you use to hash a blob.
+func NewRandomness() ([]byte, error) {
+	r, err := randScalar()
+	if err != nil {
+		return nil, err
+	}
+	s, err := randScalar()
+	if err != nil {
+		return nil, err
+	}
+	return joinRandomness(r, s), nil
 }
 
 // KeyGen picks a random x and returns the public key y = g^x.
 func KeyGen() (hk PublicKey, tk Trapdoor, err error) {
-	if _, err = tk.X.SetRandom(); err != nil {
+	x, err := randScalar()
+	if err != nil {
 		return PublicKey{}, Trapdoor{}, err
 	}
-	hk.Y.ScalarMultiplicationBase(bigOf(tk.X))
-	return hk, tk, nil
+	y := new(big.Int).Exp(G, x, P)
+	return PublicKey{Y: y}, Trapdoor{X: x, y: y}, nil
 }
 
-// digestPoint computes CH(m, r) = g^H(m) * y^r as a point.
-func digestPoint(hk PublicKey, m, r []byte) bls12381.G1Affine {
-	hm := hashToScalar(m)
-	rr := scalarFromBytes(r)
-
-	var gToHm, yToR, out bls12381.G1Affine
-	gToHm.ScalarMultiplicationBase(bigOf(hm))
-	yToR.ScalarMultiplication(&hk.Y, bigOf(rr))
-	out.Add(&gToHm, &yToR)
-	return out
+// digestInt computes h = r - (y^H(m||r) * g^s mod p) mod q as a number.
+func digestInt(y *big.Int, m []byte, r, s *big.Int) *big.Int {
+	e := hashToScalar(m, r)
+	t := new(big.Int).Exp(y, e, P)
+	t.Mul(t, new(big.Int).Exp(G, s, P))
+	t.Mod(t, P)
+	h := new(big.Int).Sub(r, t)
+	return h.Mod(h, Q)
 }
 
-// Hash returns the digest CH(m, r) = g^H(m) * y^r (48 bytes, compressed point).
-func Hash(hk PublicKey, m, r []byte) (digest []byte) {
-	d := digestPoint(hk, m, r)
-	enc := d.Bytes()
-	return enc[:]
+// Hash returns the digest of m with randomness rs = r||s (DigestLen bytes).
+// nil if rs is malformed or the key is empty (nil never verifies).
+func Hash(hk PublicKey, m, rs []byte) (digest []byte) {
+	r, s, ok := splitRandomness(rs)
+	if !ok || hk.Y == nil {
+		return nil
+	}
+	return pad(digestInt(hk.Y, m, r, s))
 }
 
-// Verify checks that digest == CH(m, r).
-func Verify(hk PublicKey, m, r, digest []byte) bool {
-	return bytes.Equal(Hash(hk, m, r), digest)
+// Verify checks that digest == Hash(m, rs). No secret needed.
+func Verify(hk PublicKey, m, rs, digest []byte) bool {
+	d := Hash(hk, m, rs)
+	return d != nil && bytes.Equal(d, digest)
 }
 
-// Forge uses x to find r' so that CH(m', r') == CH(m, r).
-// The trick: r' = r + (H(m) - H(m')) / x  (mod q).
-func Forge(tk Trapdoor, m, r, mPrime []byte) (rPrime []byte, err error) {
-	if tk.X.IsZero() {
+// Forge uses x to find (r', s') so that Hash(m', r'||s') == Hash(m, r||s).
+// k is random every time, so two forges of the same thing give different
+// results and don't leak x.
+func Forge(tk Trapdoor, m, rs, mPrime []byte) (rsPrime []byte, err error) {
+	if tk.X == nil || tk.X.Sign() == 0 {
 		return nil, errZeroTrapdoor
 	}
-	if len(r) == 0 {
+	r, s, ok := splitRandomness(rs)
+	if !ok {
 		return nil, errBadRandomness
 	}
+	y := tk.y
+	if y == nil {
+		y = new(big.Int).Exp(G, tk.X, P)
+	}
+	h := digestInt(y, m, r, s)
 
-	hm := hashToScalar(m)
-	hmPrime := hashToScalar(mPrime)
-	rr := scalarFromBytes(r)
+	k, err := randScalar()
+	if err != nil {
+		return nil, err
+	}
+	// r' = h + (g^k mod p) mod q
+	rPrime := new(big.Int).Exp(G, k, P)
+	rPrime.Add(rPrime, h)
+	rPrime.Mod(rPrime, Q)
+	// s' = k - H(m'||r') * x mod q
+	sPrime := hashToScalar(mPrime, rPrime)
+	sPrime.Mul(sPrime, tk.X)
+	sPrime.Sub(k, sPrime)
+	sPrime.Mod(sPrime, Q)
 
-	var diff, xInv, delta, out fr.Element
-	diff.Sub(&hm, &hmPrime) // H(m) - H(m')
-	xInv.Inverse(&tk.X)     // 1/x
-	delta.Mul(&diff, &xInv) // (H(m) - H(m'))/x
-	out.Add(&rr, &delta)    // r + (H(m) - H(m'))/x
-
-	enc := out.Bytes()
-	return enc[:], nil
+	return joinRandomness(rPrime, sPrime), nil
 }
