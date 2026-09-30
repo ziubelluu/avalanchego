@@ -26,15 +26,25 @@ type Proof struct {
 	AggSignature [bls.SignatureLen]byte
 }
 
-// Bytes is the RLP encoding stored in the proof DB.
+// Bytes is the kind byte followed by the RLP encoding. This is what goes in
+// the proof DB and over the RPC.
 func (p *Proof) Bytes() ([]byte, error) {
-	return rlp.EncodeToBytes(p)
+	body, err := rlp.EncodeToBytes(p)
+	if err != nil {
+		return nil, err
+	}
+	return withKind(KindTx, body), nil
 }
 
-// ProofFromBytes decodes a proof produced by Bytes.
+// ProofFromBytes decodes a proof produced by Bytes. Bytes of a StateProof
+// are refused.
 func ProofFromBytes(b []byte) (*Proof, error) {
+	body, err := stripKind(KindTx, b)
+	if err != nil {
+		return nil, err
+	}
 	p := new(Proof)
-	if err := rlp.DecodeBytes(b, p); err != nil {
+	if err := rlp.DecodeBytes(body, p); err != nil {
 		return nil, err
 	}
 	return p, nil

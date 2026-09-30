@@ -15,8 +15,14 @@ import (
 // FindStoreTx looks in [block] for the store tx that deposited [id] into the
 // contract at [depositAddr].
 func FindStoreTx(block *types.Block, depositAddr common.Address, id common.Hash) (*types.Transaction, bool) {
+	_, tx, ok := findStoreTx(block, depositAddr, id)
+	return tx, ok
+}
+
+// findStoreTx is FindStoreTx that also says at which position the tx is.
+func findStoreTx(block *types.Block, depositAddr common.Address, id common.Hash) (int, *types.Transaction, bool) {
 	selector := storeSelector
-	for _, tx := range block.Transactions() {
+	for i, tx := range block.Transactions() {
 		if tx.To() == nil || *tx.To() != depositAddr {
 			continue
 		}
@@ -26,10 +32,10 @@ func FindStoreTx(block *types.Block, depositAddr common.Address, id common.Hash)
 		}
 		gotID, _, _, _, err := UnpackStoreInput(data[len(selector):])
 		if err == nil && gotID == id {
-			return tx, true
+			return i, tx, true
 		}
 	}
-	return nil, false
+	return 0, nil, false
 }
 
 // RebuildRedactedStoreTx makes a copy of [orig] with the new opening

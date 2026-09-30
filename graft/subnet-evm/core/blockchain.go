@@ -140,6 +140,11 @@ var (
 	// to re-execute a redacted block: replaying its body would not match the
 	// Root already stored in the header.
 	errCannotReexecuteRedactedBlock = errors.New("cannot re-execute a redacted block")
+
+	// A block is redacted through one kind of proof only, and through one
+	// deposit only.
+	errRedactionKindMismatch = errors.New("redaction: the block was already redacted with another kind of proof")
+	errRedactionOtherDeposit = errors.New("redaction: the block already has a redacted deposit, only that one can be redacted again")
 )
 
 const (
@@ -549,8 +554,10 @@ func (bc *BlockChain) SetRedactionPolicy(p redact.Policy) {
 
 // RedactionContentVerifier re-checks that a redacted block's content still
 // matches what's in state (e.g. the chameleon opening still gives the digest).
-// It's injected so the generic chain code doesn't need to know the scheme.
-type RedactionContentVerifier func(block *types.Block, statedb *state.StateDB) error
+// With a deposit proposal it also checks the content is the approved one and
+// returns the position of the redacted store tx. It's injected so the generic
+// chain code doesn't need to know the scheme.
+type RedactionContentVerifier func(block *types.Block, statedb *state.StateDB, proposal *redact.StateProposal) ([]uint64, error)
 
 // SetRedactionContentVerifier sets the verifier run over redacted blocks.
 // Nil (the default) turns it off.
@@ -570,25 +577,60 @@ func (bc *BlockChain) RedactStored(original *types.Block, newTxs []*types.Transa
 	// was never redacted, so we don't use it as the key.
 	oldLink := redact.OldLink(original.Header())
 
+	kind, err := redact.KindOf(proof)
+	if err != nil {
+		return nil, err
+	}
+	var sp *redact.StateProposal
+	if kind == redact.KindState {
+		stateProof, err := redact.StateProofFromBytes(proof)
+		if err != nil {
+			return nil, err
+		}
+		sp = &stateProof.Proposal
+	}
+
+	// One kind of proof per block, and one deposit per block. Redacting the
+	// same deposit again is fine, the new proof replaces the old one.
+	if existing, err := redact.ReadRedactionProof(bc.db, oldLink); err == nil {
+		existingKind, err := redact.KindOf(existing)
+		if err == nil && existingKind != kind {
+			return nil, errRedactionKindMismatch
+		}
+		if err == nil && kind == redact.KindState {
+			old, err := redact.StateProofFromBytes(existing)
+			if err == nil && (old.Proposal.DepositAddr != sp.DepositAddr || old.Proposal.ID != sp.ID) {
+				return nil, errRedactionOtherDeposit
+			}
+		}
+	}
+
 	// Don't persist a redaction whose new content doesn't match the digest in
-	// state (CH(blob', r') != D). The digest never changes, so head state has it.
+	// state (CH(blob', r') != D), or that isn't what the committee approved.
+	// The digest never changes, so head state has it.
 	if bc.redactionContentVerifier != nil {
 		statedb, err := bc.State()
 		if err != nil {
 			return nil, err
 		}
-		if err := bc.redactionContentVerifier(redacted, statedb); err != nil {
+		if _, err := bc.redactionContentVerifier(redacted, statedb, sp); err != nil {
 			return nil, fmt.Errorf("refusing to apply redaction: %w", err)
 		}
 	}
 
-	if err := redact.Persist(bc.db, oldLink, redacted); err != nil {
+	// All the writes go in one batch, so either the redaction is fully applied
+	// or nothing changes.
+	batch := bc.db.NewBatch()
+	if err := redact.Persist(batch, oldLink, redacted); err != nil {
 		return nil, err
 	}
-	if err := redact.WriteRedactionProof(bc.db, oldLink, proof); err != nil {
+	if err := redact.WriteRedactionProof(batch, oldLink, proof); err != nil {
 		return nil, err
 	}
-	redact.ReindexRedacted(bc.db, original, redacted)
+	redact.ReindexRedacted(batch, original, redacted)
+	if err := batch.Write(); err != nil {
+		return nil, err
+	}
 
 	oldTxHashes := make([]common.Hash, len(original.Transactions()))
 	for i, tx := range original.Transactions() {
@@ -605,6 +647,20 @@ func (bc *BlockChain) RedactStored(original *types.Block, newTxs []*types.Transa
 	number := redacted.NumberU64()
 	if _, ok := bc.hc.acceptedNumberCache.Get(number); ok {
 		bc.hc.acceptedNumberCache.Put(number, redacted.Header())
+	}
+	// If the redacted block is the head of the chain, the head kept in memory
+	// has to be the redacted one too.
+	if bc.CurrentBlock().Hash() == original.Hash() {
+		bc.hc.SetCurrentHeader(redacted.Header())
+		bc.currentBlock.Store(redacted.Header())
+	}
+	bc.acceptorTipLock.Lock()
+	if bc.acceptorTip != nil && bc.acceptorTip.Hash() == original.Hash() {
+		bc.acceptorTip = redacted
+	}
+	bc.acceptorTipLock.Unlock()
+	if bc.lastAccepted != nil && bc.lastAccepted.Hash() == original.Hash() {
+		bc.lastAccepted = redacted
 	}
 	return redacted, nil
 }
@@ -986,23 +1042,75 @@ func (bc *BlockChain) writeHeadBlock(block *types.Block) {
 	bc.currentBlock.Store(block.Header())
 }
 
-// redactedIndices reads the proof for [identity] and returns the set of
-// redacted positions. The bool is false when no usable proof is stored, so
-// callers fall back to tolerating the whole redacted block.
-func (bc *BlockChain) redactedIndices(identity common.Hash) (map[uint64]bool, bool) {
+// redactedPositions checks the content of the redacted [block] (stored under
+// [identity]) and returns the set of redacted positions. For a tx proof the
+// positions come from the proposal, for a deposit proof from the verifier,
+// which finds the store tx the committee approved. The bool is false when the
+// positions can't be known, and callers then tolerate the whole block.
+//
+// The content check uses the HEAD state, not the (maybe pruned) historical
+// one: the digest and the public key never change, so head has the same
+// values. This way it also works on pruned nodes.
+func (bc *BlockChain) redactedPositions(identity common.Hash, block *types.Block) (map[uint64]bool, bool, error) {
+	var statedb *state.StateDB
+	if bc.redactionContentVerifier != nil {
+		var err error
+		if statedb, err = bc.State(); err != nil {
+			return nil, false, fmt.Errorf("cannot load state for content check: %w", err)
+		}
+	}
+	// check is the content verifier, or nothing when none is set
+	check := func(sp *redact.StateProposal) ([]uint64, error) {
+		if bc.redactionContentVerifier == nil {
+			return nil, nil
+		}
+		return bc.redactionContentVerifier(block, statedb, sp)
+	}
+	toSet := func(positions []uint64) map[uint64]bool {
+		set := make(map[uint64]bool, len(positions))
+		for _, i := range positions {
+			set[i] = true
+		}
+		return set
+	}
+
 	raw, err := redact.ReadRedactionProof(bc.db, identity)
 	if err != nil {
-		return nil, false
+		// no proof: the openings still have to hold
+		_, err := check(nil)
+		return nil, false, err
 	}
-	proof, err := redact.ProofFromBytes(raw)
+	kind, err := redact.KindOf(raw)
 	if err != nil {
-		return nil, false
+		_, err := check(nil)
+		return nil, false, err
 	}
-	set := make(map[uint64]bool, len(proof.Proposal.RedactedIndices))
-	for _, i := range proof.Proposal.RedactedIndices {
-		set[i] = true
+	switch kind {
+	case redact.KindTx:
+		proof, err := redact.ProofFromBytes(raw)
+		if err != nil {
+			return nil, false, err
+		}
+		if _, err := check(nil); err != nil {
+			return nil, false, err
+		}
+		return toSet(proof.Proposal.RedactedIndices), true, nil
+	case redact.KindState:
+		proof, err := redact.StateProofFromBytes(raw)
+		if err != nil {
+			return nil, false, err
+		}
+		if bc.redactionContentVerifier == nil {
+			return nil, false, nil
+		}
+		positions, err := check(&proof.Proposal)
+		if err != nil {
+			return nil, false, err
+		}
+		return toSet(positions), true, nil
+	default:
+		return nil, false, nil
 	}
-	return set, true
 }
 
 // ValidateCanonicalChain confirms a canonical chain is well-formed.
@@ -1020,25 +1128,6 @@ func (bc *BlockChain) ValidateCanonicalChain() error {
 		// the right storage key in both cases.
 		identity := redact.OldLink(current)
 		isRedacted := identity != current.Hash()
-
-		// For a redacted block, get the exact redacted positions from the proof
-		// so we still fully check the untouched txs. No proof -> tolerate all.
-		var (
-			redactedSet   map[uint64]bool
-			redactedKnown bool
-		)
-		if isRedacted {
-			redactedSet, redactedKnown = bc.redactedIndices(identity)
-		}
-		redactedAt := func(i int) bool {
-			if !isRedacted {
-				return false
-			}
-			if !redactedKnown {
-				return true
-			}
-			return redactedSet[uint64(i)]
-		}
 
 		blkByHash := bc.GetBlockByHash(identity)
 		if blkByHash == nil {
@@ -1077,6 +1166,30 @@ func (bc *BlockChain) ValidateCanonicalChain() error {
 			return fmt.Errorf("current block missing: #%d [%x..]", current.Number, current.Hash().Bytes()[:4])
 		}
 		txs := block.Transactions()
+
+		// For a redacted block, check its content and get the exact redacted
+		// positions, so we still fully check the untouched txs. If the
+		// positions can't be known, tolerate the whole block.
+		var (
+			redactedSet   map[uint64]bool
+			redactedKnown bool
+		)
+		if isRedacted {
+			var err error
+			redactedSet, redactedKnown, err = bc.redactedPositions(identity, block)
+			if err != nil {
+				return fmt.Errorf("redacted block #%d failed content verification: %w", current.Number, err)
+			}
+		}
+		redactedAt := func(i int) bool {
+			if !isRedacted {
+				return false
+			}
+			if !redactedKnown {
+				return true
+			}
+			return redactedSet[uint64(i)]
+		}
 
 		// Transactions are only indexed beneath the last accepted block, so we only check
 		// that the transactions have been indexed, if we are checking below the last accepted
@@ -1125,23 +1238,6 @@ func (bc *BlockChain) ValidateCanonicalChain() error {
 			}
 			if txReceipt.BlockNumber.Uint64() != current.Number.Uint64() {
 				return fmt.Errorf("transaction receipt had block number %d, but expected %d", txReceipt.BlockNumber.Uint64(), current.Number)
-			}
-		}
-
-		// For a redacted block, check its new content still matches the digest in
-		// state. The old-link trick leaves the body unpinned, so this ties it back
-		// to the digest and rejects a tampered opening.
-		//
-		// We read the HEAD state, not the (maybe pruned) historical one: the digest
-		// and the public key never change, so head has the same values. This way
-		// the check also works on pruned nodes.
-		if isRedacted && bc.redactionContentVerifier != nil {
-			statedb, err := bc.State()
-			if err != nil {
-				return fmt.Errorf("redacted block #%d: cannot load state for content check: %w", current.Number, err)
-			}
-			if verr := bc.redactionContentVerifier(block, statedb); verr != nil {
-				return fmt.Errorf("redacted block #%d failed content verification: %w", current.Number, verr)
 			}
 		}
 

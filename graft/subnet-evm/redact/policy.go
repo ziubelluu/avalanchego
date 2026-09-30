@@ -6,6 +6,8 @@ package redact
 import (
 	"context"
 
+	"github.com/ava-labs/libevm/common"
+
 	"github.com/ava-labs/libevm/ethdb"
 
 	ethtypes "github.com/ava-labs/libevm/core/types"
@@ -56,6 +58,23 @@ func (p *committeePolicy) Approved(ctx context.Context, parent *ethtypes.Header)
 	if err != nil {
 		return false
 	}
+	kind, err := KindOf(raw)
+	if err != nil {
+		return false
+	}
+	switch kind {
+	case KindTx:
+		return p.approvedTx(ctx, raw, originalHash, parent)
+	case KindState:
+		return p.approvedState(ctx, raw, originalHash)
+	default:
+		return false
+	}
+}
+
+// approvedTx: the proof is for this block, for the body that is actually
+// there, and reaches the quorum.
+func (p *committeePolicy) approvedTx(ctx context.Context, raw []byte, originalHash common.Hash, parent *ethtypes.Header) bool {
 	proof, err := ProofFromBytes(raw)
 	if err != nil {
 		return false
@@ -75,4 +94,24 @@ func (p *committeePolicy) Approved(ctx context.Context, parent *ethtypes.Header)
 		return false
 	}
 	return VerifyRedactionProof(proof, p.networkID, p.sourceChainID, ws, p.quorumNum, p.quorumDen) == nil
+}
+
+// approvedState: the proof is for this block and reaches the quorum. A
+// StateProposal has no NewTxHash (the new opening depends on the random k of
+// the forge), so the link between proof and body is checked where the body
+// is, by the content verifier.
+func (p *committeePolicy) approvedState(ctx context.Context, raw []byte, originalHash common.Hash) bool {
+	proof, err := StateProofFromBytes(raw)
+	if err != nil {
+		return false
+	}
+	if proof.Proposal.OriginalHash != originalHash {
+		return false
+	}
+
+	ws, err := p.warpSet(ctx, proof.Proposal.PChainHeight)
+	if err != nil {
+		return false
+	}
+	return VerifyStateProof(proof, p.networkID, p.sourceChainID, ws, p.quorumNum, p.quorumDen) == nil
 }

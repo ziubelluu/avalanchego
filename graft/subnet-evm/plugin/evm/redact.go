@@ -71,19 +71,33 @@ func (vm *VM) RedactStateDeposit(
 		NewBlobHash:  crypto.Keccak256Hash(newBlob),
 		PChainHeight: pChainHeight,
 	}
-	if err := redact.WriteStateRedactionProof(vm.chaindb, sp.Hash(), proofBytes); err != nil {
+
+	// Check the proof before touching anything: it must be for exactly this
+	// proposal and reach the quorum. Nothing gets written until the whole
+	// redaction is ready to be applied.
+	proof, err := redact.StateProofFromBytes(proofBytes)
+	if err != nil {
+		return common.Hash{}, nil, err
+	}
+	if proof.Proposal.Hash() != sp.Hash() {
+		return common.Hash{}, nil, errors.New("proof is not for this proposal")
+	}
+	ws, err := redact.NewWarpSetFunc(vm.ctx.ValidatorState, vm.ctx.SubnetID)(ctx, sp.PChainHeight)
+	if err != nil {
+		return common.Hash{}, nil, err
+	}
+	if err := redact.VerifyStateProof(
+		proof,
+		vm.ctx.NetworkID,
+		vm.ctx.ChainID,
+		ws,
+		warpprecompile.WarpDefaultQuorumNumerator,
+		warpprecompile.WarpQuorumDenominator,
+	); err != nil {
 		return common.Hash{}, nil, err
 	}
 
-	approver := redact.NewCommitteeStatePolicy(
-		vm.chaindb,
-		redact.NewWarpSetFunc(vm.ctx.ValidatorState, vm.ctx.SubnetID),
-		vm.ctx.NetworkID,
-		vm.ctx.ChainID,
-		warpprecompile.WarpDefaultQuorumNumerator,
-		warpprecompile.WarpQuorumDenominator,
-	)
-	forger, err := redact.NewForgerFromEnv(approver, RedactTrapdoorEnvVar)
+	forger, err := redact.NewForgerFromEnv(redact.NewApprovedProposal(sp), RedactTrapdoorEnvVar)
 	if err != nil {
 		return common.Hash{}, nil, err
 	}

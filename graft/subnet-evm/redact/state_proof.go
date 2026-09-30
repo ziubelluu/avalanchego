@@ -20,15 +20,25 @@ type StateProof struct {
 	AggSignature [bls.SignatureLen]byte
 }
 
-// Bytes is the RLP stored in the proof DB.
+// Bytes is the kind byte followed by the RLP encoding. This is what goes in
+// the proof DB and over the RPC.
 func (p *StateProof) Bytes() ([]byte, error) {
-	return rlp.EncodeToBytes(p)
+	body, err := rlp.EncodeToBytes(p)
+	if err != nil {
+		return nil, err
+	}
+	return withKind(KindState, body), nil
 }
 
-// StateProofFromBytes decodes what Bytes produced.
+// StateProofFromBytes decodes what Bytes produced. Bytes of a Proof are
+// refused.
 func StateProofFromBytes(b []byte) (*StateProof, error) {
+	body, err := stripKind(KindState, b)
+	if err != nil {
+		return nil, err
+	}
 	p := new(StateProof)
-	if err := rlp.DecodeBytes(b, p); err != nil {
+	if err := rlp.DecodeBytes(body, p); err != nil {
 		return nil, err
 	}
 	return p, nil
