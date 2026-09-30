@@ -565,6 +565,11 @@ func (bc *BlockChain) SetRedactionContentVerifier(v RedactionContentVerifier) {
 func (bc *BlockChain) RedactStored(original *types.Block, newTxs []*types.Transaction, proof []byte) (*types.Block, error) {
 	redacted := redact.RedactBlock(original, newTxs)
 
+	// A block stays under its old link for its whole life, no matter how many
+	// times it gets redacted. original.Hash() is the old link only if the block
+	// was never redacted, so we don't use it as the key.
+	oldLink := redact.OldLink(original.Header())
+
 	// Don't persist a redaction whose new content doesn't match the digest in
 	// state (CH(blob', r') != D). The digest never changes, so head state has it.
 	if bc.redactionContentVerifier != nil {
@@ -577,10 +582,10 @@ func (bc *BlockChain) RedactStored(original *types.Block, newTxs []*types.Transa
 		}
 	}
 
-	if err := redact.Persist(bc.db, original.Hash(), redacted); err != nil {
+	if err := redact.Persist(bc.db, oldLink, redacted); err != nil {
 		return nil, err
 	}
-	if err := redact.WriteRedactionProof(bc.db, original.Hash(), proof); err != nil {
+	if err := redact.WriteRedactionProof(bc.db, oldLink, proof); err != nil {
 		return nil, err
 	}
 	redact.ReindexRedacted(bc.db, original, redacted)
@@ -589,13 +594,24 @@ func (bc *BlockChain) RedactStored(original *types.Block, newTxs []*types.Transa
 	for i, tx := range original.Transactions() {
 		oldTxHashes[i] = tx.Hash()
 	}
-	bc.PurgeBlockCaches(original.Hash(), oldTxHashes)
+	bc.PurgeBlockCaches(oldLink, oldTxHashes)
+	// The block cache keeps a block under its own hash, and for a block that
+	// was already redacted that is not the old link.
+	if original.Hash() != oldLink {
+		bc.PurgeBlockCaches(original.Hash(), nil)
+	}
+	// Headers looked up by number have their own cache. Only refresh it if the
+	// block is in there, so we don't push an old block into it.
+	number := redacted.NumberU64()
+	if _, ok := bc.hc.acceptedNumberCache.Get(number); ok {
+		bc.hc.acceptedNumberCache.Put(number, redacted.Header())
+	}
 	return redacted, nil
 }
 
 // PurgeBlockCaches drops the in-memory caches for a block.
 // A redaction writes to the database directly, so a running node
-// must call this to stop serving the old block from memory. 
+// must call this to stop serving the old block from memory.
 // originalTxHashes are the hashes of the transactions before the redaction.
 func (bc *BlockChain) PurgeBlockCaches(blockHash common.Hash, originalTxHashes []common.Hash) {
 	bc.blockCache.Remove(blockHash)
