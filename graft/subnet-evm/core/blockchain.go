@@ -670,6 +670,18 @@ func (bc *BlockChain) RedactStored(original *types.Block, newTxs []*types.Transa
 		return nil, err
 	}
 
+	// A redacted block can't be re-executed, and after a crash the node
+	// re-executes from the newest state it has on disk up to the tip. Writing
+	// the tip's state now means that replay never has to go through this
+	// block. Archive and Firewood already keep every state on disk.
+	if bc.cacheConfig.Pruning && bc.cacheConfig.StateScheme != customrawdb.FirewoodScheme {
+		if head := bc.LastAcceptedBlock(); head != nil && bc.HasState(head.Root()) {
+			if err := bc.triedb.Commit(head.Root(), false); err != nil {
+				return nil, fmt.Errorf("redaction applied, but writing the tip state failed: %w", err)
+			}
+		}
+	}
+
 	oldTxHashes := make([]common.Hash, len(original.Transactions()))
 	for i, tx := range original.Transactions() {
 		oldTxHashes[i] = tx.Hash()
@@ -2225,7 +2237,9 @@ func (bc *BlockChain) initSnapshot(b *types.Header) {
 		SkipVerify: !bc.cacheConfig.SnapshotVerify,
 	}
 	var err error
-	bc.snaps, err = snapshot.New(snapconfig, bc.db, bc.triedb, b.Hash(), b.Root)
+	// Snapshot layers are keyed by block hash, and blocks inserted after a
+	// redacted head point to it through its old link.
+	bc.snaps, err = snapshot.New(snapconfig, bc.db, bc.triedb, redact.OldLink(b), b.Root)
 	if err != nil {
 		log.Error("failed to initialize snapshots", "headHash", b.Hash(), "headRoot", b.Root, "err", err, "async", asyncBuild)
 	}
@@ -2249,7 +2263,8 @@ func (bc *BlockChain) reprocessState(current *types.Block, reexec uint64) error 
 
 	// The acceptor tip is up to date either if it matches the current hash, or it has not been
 	// initialized (i.e., this node has not accepted any blocks asynchronously).
-	acceptorTipUpToDate := acceptorTip == (common.Hash{}) || acceptorTip == current.Hash()
+	// A redacted tip is stored, and was accepted, under its old link.
+	acceptorTipUpToDate := acceptorTip == (common.Hash{}) || acceptorTip == redact.OldLink(current.Header())
 
 	// If the state is already available and the acceptor tip is up to date, skip re-processing.
 	if bc.HasState(current.Root()) && acceptorTipUpToDate {
@@ -2337,7 +2352,7 @@ func (bc *BlockChain) reprocessState(current *types.Block, reexec uint64) error 
 
 		// Initialize snapshot if required (prevents full snapshot re-generation in
 		// the case of unclean shutdown)
-		if parent.Hash() == acceptorTip {
+		if redact.OldLink(parent.Header()) == acceptorTip {
 			log.Info("Recovering snapshot", "hash", parent.Hash(), "index", parent.NumberU64())
 			// TODO: switch to checking the snapshot block hash markers here to ensure that when we re-process the block, we have the opportunity to apply
 			// a snapshot diff layer that we may have been in the middle of committing during shutdown. This will prevent snapshot re-generation in the case
@@ -2347,6 +2362,12 @@ func (bc *BlockChain) reprocessState(current *types.Block, reexec uint64) error 
 				bc.initSnapshot(parent.Header())
 			}
 			writeIndices = true // Set [writeIndices] to true, so that the indices will be updated from the last accepted tip onwards.
+		}
+
+		// A redacted block can't be replayed: its body is not the one that
+		// produced its Root. Say it clearly instead of failing on the state.
+		if redact.IsRedacted(current.Header()) {
+			return fmt.Errorf("%w: %s (number %d) while re-generating state", errCannotReexecuteRedactedBlock, current.Hash(), current.NumberU64())
 		}
 
 		// Reprocess next block using previously fetched data
