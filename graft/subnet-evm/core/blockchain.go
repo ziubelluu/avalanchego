@@ -145,6 +145,11 @@ var (
 	// deposit only.
 	errRedactionKindMismatch = errors.New("redaction: the block was already redacted with another kind of proof")
 	errRedactionOtherDeposit = errors.New("redaction: the block already has a redacted deposit, only that one can be redacted again")
+
+	// A block whose parent was redacted goes in only if the redaction is
+	// approved and the parent's content still holds.
+	errRedactedParentNotApproved = errors.New("redacted parent not approved")
+	errRedactedParentContent     = errors.New("redacted parent failed content check")
 )
 
 const (
@@ -936,7 +941,9 @@ func (bc *BlockChain) loadLastState(lastAcceptedHash common.Hash) error {
 	// transition. Nodes that do not accept any blocks after upgrading before
 	// transition wouldn't otherwise correctly set these values.
 	{
-		lastAcceptedHash := bc.lastAccepted.Hash()
+		// A redacted block is stored under its old link, so that's the hash
+		// the markers must point to.
+		lastAcceptedHash := redact.OldLink(bc.lastAccepted.Header())
 		if finalized := rawdb.ReadFinalizedBlockHash(bc.db); finalized != lastAcceptedHash {
 			log.Info("Repairing finalized block hash", "from", finalized, "to", lastAcceptedHash)
 			rawdb.WriteFinalizedBlockHash(bc.db, lastAcceptedHash)
@@ -1007,7 +1014,7 @@ func (bc *BlockChain) ExportCallback(callback func(block *types.Block) error, fi
 		if nr > first && block.ParentHash() != parentHash {
 			return errors.New("export failed: chain reorg during export")
 		}
-		parentHash = block.Hash()
+		parentHash = redact.OldLink(block.Header())
 		if err := callback(block); err != nil {
 			return err
 		}
@@ -1394,11 +1401,13 @@ func (bc *BlockChain) Accept(block *types.Block) error {
 	bc.chainmu.Lock()
 	defer bc.chainmu.Unlock()
 
-	// The parent of [block] must be the last accepted block.
-	if bc.lastAccepted.Hash() != block.ParentHash() {
+	// The parent of [block] must be the last accepted block. If that one was
+	// redacted, the child points to it through the old link.
+	lastAcceptedID := redact.OldLink(bc.lastAccepted.Header())
+	if lastAcceptedID != block.ParentHash() {
 		return fmt.Errorf(
 			"expected accepted block to have parent %s:%d but got %s:%d",
-			bc.lastAccepted.Hash().Hex(),
+			lastAcceptedID.Hex(),
 			bc.lastAccepted.NumberU64(),
 			block.ParentHash().Hex(),
 			block.NumberU64()-1,
@@ -1501,7 +1510,7 @@ func (bc *BlockChain) Reject(block *types.Block) error {
 // and introduces chain reorg if necessary.
 func (bc *BlockChain) writeKnownBlock(block *types.Block) error {
 	current := bc.CurrentBlock()
-	if block.ParentHash() != current.Hash() {
+	if block.ParentHash() != redact.OldLink(current) {
 		if err := bc.reorg(current, block); err != nil {
 			return err
 		}
@@ -1524,7 +1533,7 @@ func (bc *BlockChain) writeCanonicalBlockWithLogs(block *types.Block, logs []*ty
 // newTip returns a boolean indicating if the block should be appended to
 // the canonical chain.
 func (bc *BlockChain) newTip(block *types.Block) bool {
-	return block.ParentHash() == bc.CurrentBlock().Hash()
+	return block.ParentHash() == redact.OldLink(bc.CurrentBlock())
 }
 
 // writeBlockAndSetHead persists the block and associated state to the database
@@ -1635,6 +1644,32 @@ func (bc *BlockChain) InsertChain(chain types.Blocks) (int, error) {
 	return len(chain), nil
 }
 
+// checkRedactedParent is the dual-link rule on the ordinary insert path: a
+// block whose parent was redacted goes in only if the policy approves the
+// redaction and the parent's content still holds. For an ordinary parent it
+// costs a compare of two header fields.
+func (bc *BlockChain) checkRedactedParent(block *types.Block) error {
+	if block.NumberU64() == 0 {
+		return nil
+	}
+	parent := bc.GetHeader(block.ParentHash(), block.NumberU64()-1)
+	if parent == nil || !redact.IsRedacted(parent) {
+		// an unknown parent is reported by the header verification
+		return nil
+	}
+	if !redact.ValidParentLinkWithPolicy(context.Background(), block.ParentHash(), parent, bc.redactionPolicy) {
+		return fmt.Errorf("%w: block %d, parent %s", errRedactedParentNotApproved, block.NumberU64(), block.ParentHash())
+	}
+	parentBlock := bc.GetBlock(block.ParentHash(), block.NumberU64()-1)
+	if parentBlock == nil {
+		return fmt.Errorf("%w: body of %s not found", errRedactedParentContent, block.ParentHash())
+	}
+	if _, _, err := bc.redactedPositions(block.ParentHash(), parentBlock); err != nil {
+		return fmt.Errorf("%w: %w", errRedactedParentContent, err)
+	}
+	return nil
+}
+
 func (bc *BlockChain) InsertBlock(block *types.Block) error {
 	return bc.InsertBlockManual(block, true)
 }
@@ -1656,6 +1691,9 @@ func (bc *BlockChain) insertBlock(block *types.Block, writes bool) error {
 	// instead of failing later with a confusing state-root mismatch.
 	if redact.OldLink(block.Header()) != block.Hash() {
 		return fmt.Errorf("%w: %s (number %d)", errCannotReexecuteRedactedBlock, block.Hash(), block.NumberU64())
+	}
+	if err := bc.checkRedactedParent(block); err != nil {
+		return err
 	}
 
 	start := time.Now()

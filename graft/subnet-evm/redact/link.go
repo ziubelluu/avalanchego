@@ -29,3 +29,11 @@ func OldLink(h *ethtypes.Header) common.Hash {
 	orig.TxHash = *initialTxHash
 	return orig.Hash()
 }
+
+// IsRedacted says if the block was redacted: TxHash moved away from the tx
+// root it was born with. It's a compare of two fields, no hashing, so it's
+// cheap enough to run on every block.
+func IsRedacted(h *ethtypes.Header) bool {
+	initialTxHash := customtypes.GetHeaderExtra(h).InitialTxHash
+	return initialTxHash != nil && *initialTxHash != h.TxHash
+}
