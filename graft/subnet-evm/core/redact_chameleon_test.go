@@ -36,7 +36,7 @@ import (
 
 // buildCommittee creates n equally-weighted validators with BLS keys and a
 // canonical-index -> signer lookup.
-func buildCommittee(t *testing.T, n int) (validators.WarpSet, map[int]bls.Signer) {
+func buildCommittee(t testing.TB, n int) (validators.WarpSet, map[int]bls.Signer) {
 	t.Helper()
 	byPK := map[string]bls.Signer{}
 	vdrSet := map[ids.NodeID]*validators.GetValidatorOutput{}
@@ -121,6 +121,18 @@ func (d *depositChain) newTxsWithRedactedStore(redacted *types.Transaction) []*t
 // setupDepositChain deploys the deposit contract and stores (blob, r, digest).
 func setupDepositChain(t *testing.T, hkBytes []byte, id common.Hash, blob, r, digest []byte) *depositChain {
 	t.Helper()
+	return buildDepositChain(t, hkBytes, id, blob, r, digest, true)
+}
+
+// setupDepositChainPendingChild is the same but block 1 is only generated, not
+// inserted: the store block is the tip and block 1 can be inserted later.
+func setupDepositChainPendingChild(t *testing.T, hkBytes []byte, id common.Hash, blob, r, digest []byte) *depositChain {
+	t.Helper()
+	return buildDepositChain(t, hkBytes, id, blob, r, digest, false)
+}
+
+func buildDepositChain(t *testing.T, hkBytes []byte, id common.Hash, blob, r, digest []byte, withChild bool) *depositChain {
+	t.Helper()
 	require := require.New(t)
 
 	chainCfg := params.Copy(params.TestChainConfig)
@@ -164,9 +176,13 @@ func setupDepositChain(t *testing.T, hkBytes []byte, id common.Hash, blob, r, di
 		}
 	})
 	require.NoError(err)
-	_, err = bc.InsertChain(chain)
+	inserted := chain
+	if !withChild {
+		inserted = chain[:1]
+	}
+	_, err = bc.InsertChain(inserted)
 	require.NoError(err)
-	for _, blk := range chain {
+	for _, blk := range inserted {
 		require.NoError(bc.Accept(blk))
 	}
 	bc.DrainAcceptorQueue()
@@ -243,6 +259,9 @@ func TestChameleonHappyPathE2E(t *testing.T) {
 	require.NoError(err)
 	defer bc2.Stop()
 	bc2.SetRedactionContentVerifier(redactabledeposit.VerifyRedactedBlock)
+	// The committee vote is checked by the forger above. The link policy is
+	// not what this test looks at, so any redaction is allowed.
+	bc2.SetRedactionPolicy(redact.AllowAllForTesting)
 
 	require.False(dbContains(dc.db, blob), "blob should be gone after redaction")
 
@@ -304,6 +323,9 @@ func TestChameleonConsensusRejectsTamperedRedaction(t *testing.T) {
 	bc2, err := createBlockChain(dc.db, DefaultCacheConfig, dc.gspec, dc.block1.Hash())
 	require.NoError(err)
 	defer bc2.Stop()
+	// Any redaction is allowed, so that the only thing that can stop the
+	// tampered block is the content check.
+	bc2.SetRedactionPolicy(redact.AllowAllForTesting)
 
 	// Without the verifier, the tampered block still passes root/old-link checks.
 	require.NoError(bc2.ValidateCanonicalChain())
@@ -329,10 +351,19 @@ func TestChameleonRedactStoredEnforcesOpening(t *testing.T) {
 	defer dc.bc.Stop()
 	dc.bc.SetRedactionContentVerifier(redactabledeposit.VerifyRedactedBlock)
 
+	// The proof for "blob -> empty" (not signed: this test is about the
+	// content check, not about the vote).
+	proof := &redact.StateProof{Proposal: redact.StateProposal{
+		OriginalHash: dc.block0.Hash(), DepositAddr: dc.depositAddr, ID: id, Digest: digest,
+		NewBlobHash: crypto.Keccak256Hash([]byte{}),
+	}}
+	proofBytes, err := proof.Bytes()
+	require.NoError(err)
+
 	// Tampered opening: RedactStored refuses to apply it.
 	garbageCalldata, err := redactabledeposit.RedactedStoreCalldata(dc.storeTx.Data(), []byte{}, bytes.Repeat([]byte{0x0B}, chameleon.RandomnessLen))
 	require.NoError(err)
-	_, err = dc.bc.RedactStored(dc.block0, dc.newTxsWithRedactedStore(dc.redactedStoreTx(t, garbageCalldata)), []byte("proof"))
+	_, err = dc.bc.RedactStored(dc.block0, dc.newTxsWithRedactedStore(dc.redactedStoreTx(t, garbageCalldata)), proofBytes)
 	require.Error(err, "RedactStored must refuse an invalid opening")
 
 	// Correctly forged opening: RedactStored applies it.
@@ -340,7 +371,7 @@ func TestChameleonRedactStoredEnforcesOpening(t *testing.T) {
 	require.NoError(err)
 	validCalldata, err := redactabledeposit.RedactedStoreCalldata(dc.storeTx.Data(), []byte{}, rPrime)
 	require.NoError(err)
-	_, err = dc.bc.RedactStored(dc.block0, dc.newTxsWithRedactedStore(dc.redactedStoreTx(t, validCalldata)), []byte("proof"))
+	_, err = dc.bc.RedactStored(dc.block0, dc.newTxsWithRedactedStore(dc.redactedStoreTx(t, validCalldata)), proofBytes)
 	require.NoError(err, "RedactStored must accept a valid forged opening")
 }
 

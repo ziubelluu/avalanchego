@@ -67,8 +67,11 @@ func TestValidateCanonicalChainWithRedactedBlock(t *testing.T) {
 	block1 := chain[1]
 
 	// Redact the middle block: empty body, recompute TxHash, freeze the rest.
+	// The committee approves it.
+	committee := newTestCommittee(t)
 	redacted := redact.RedactBlock(block1, nil)
 	require.NoError(t, redact.Persist(db, block1.Hash(), redacted))
+	committee.approve(t, db, block1.Hash(), redacted, []uint64{0})
 
 	bc.Stop()
 
@@ -76,6 +79,7 @@ func TestValidateCanonicalChainWithRedactedBlock(t *testing.T) {
 	bc2, err := createBlockChain(db, DefaultCacheConfig, gspec, head.Hash())
 	require.NoError(t, err)
 	defer bc2.Stop()
+	bc2.SetRedactionPolicy(committee.policy(db))
 
 	require.NoError(t, bc2.ValidateCanonicalChain())
 }
@@ -179,14 +183,17 @@ func TestValidateCanonicalChainRedactedKeepsSurvivingTx(t *testing.T) {
 
 	// Redact only the first tx (zero its input); keep the second tx intact.
 	redactedTx := mkTx(0, nil)
+	committee := newTestCommittee(t)
 	redacted := redact.RedactBlock(target, []*types.Transaction{redactedTx, survivingTx})
 	require.NoError(t, redact.Persist(db, target.Hash(), redacted))
+	committee.approve(t, db, target.Hash(), redacted, []uint64{0})
 
 	bc.Stop()
 
 	bc2, err := createBlockChain(db, DefaultCacheConfig, gspec, head.Hash())
 	require.NoError(t, err)
 	defer bc2.Stop()
+	bc2.SetRedactionPolicy(committee.policy(db))
 
 	require.NoError(t, bc2.ValidateCanonicalChain())
 }
@@ -256,7 +263,9 @@ func setupRedactedFirstTxChain(t *testing.T) (ethdb.Database, *Genesis, *types.B
 // buildValidationChain builds and accepts an n-block chain, redacts the given
 // percentage of its (non-head) blocks (storing a proof for each), reopens the
 // chain with cold caches and returns it ready for ValidateCanonicalChain.
-func buildValidationChain(b *testing.B, n, redactedPercent int) *BlockChain {
+// With a committee the proofs are signed and the chain uses the real policy,
+// without one every redaction is allowed.
+func buildValidationChain(b *testing.B, n, redactedPercent int, committee *testCommittee) *BlockChain {
 	b.Helper()
 	var (
 		key, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
@@ -311,6 +320,10 @@ func buildValidationChain(b *testing.B, n, redactedPercent int) *BlockChain {
 		if err := redact.Persist(db, blk.Hash(), redacted); err != nil {
 			b.Fatal(err)
 		}
+		if committee != nil {
+			committee.approve(b, db, blk.Hash(), redacted, []uint64{0})
+			continue
+		}
 		proof := &redact.Proof{Proposal: redact.Proposal{OriginalHash: blk.Hash()}}
 		raw, err := proof.Bytes()
 		if err != nil {
@@ -326,16 +339,22 @@ func buildValidationChain(b *testing.B, n, redactedPercent int) *BlockChain {
 	if err != nil {
 		b.Fatal(err)
 	}
+	if committee != nil {
+		bc2.SetRedactionPolicy(committee.policy(db))
+	} else {
+		bc2.SetRedactionPolicy(redact.AllowAllForTesting)
+	}
 	return bc2
 }
 
 // BenchmarkValidateCanonicalChainRedacted measures full-chain validation time as
-// the fraction of redacted blocks grows.
+// the fraction of redacted blocks grows. Every redaction is allowed here, so
+// this is the cost of reading the redacted blocks and checking the links.
 func BenchmarkValidateCanonicalChainRedacted(b *testing.B) {
 	const chainLen = 32
 	for _, frac := range []int{0, 25, 50, 100} {
 		b.Run(fmt.Sprintf("redacted_%d%%", frac), func(b *testing.B) {
-			bc := buildValidationChain(b, chainLen, frac)
+			bc := buildValidationChain(b, chainLen, frac, nil)
 			defer bc.Stop()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
@@ -347,36 +366,64 @@ func BenchmarkValidateCanonicalChainRedacted(b *testing.B) {
 	}
 }
 
-func writeProofIndices(t *testing.T, db ethdb.Database, blockHash common.Hash, indices []uint64) {
+// BenchmarkValidateCanonicalChainRedactedCommittee is the same with the real
+// policy: on top of the above, every redacted block costs one check of the
+// committee signature.
+func BenchmarkValidateCanonicalChainRedactedCommittee(b *testing.B) {
+	const chainLen = 32
+	for _, frac := range []int{0, 25, 50, 100} {
+		b.Run(fmt.Sprintf("redacted_%d%%", frac), func(b *testing.B) {
+			bc := buildValidationChain(b, chainLen, frac, newTestCommittee(b))
+			defer bc.Stop()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := bc.ValidateCanonicalChain(); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// writeProofIndices makes the committee approve the block stored under the
+// hash of [target], saying that [indices] are the redacted positions.
+func writeProofIndices(t *testing.T, db ethdb.Database, committee *testCommittee, target *types.Block, indices []uint64) {
 	t.Helper()
-	proof := &redact.Proof{Proposal: redact.Proposal{OriginalHash: blockHash, RedactedIndices: indices}}
-	raw, err := proof.Bytes()
-	require.NoError(t, err)
-	require.NoError(t, redact.WriteRedactionProof(db, blockHash, raw))
+	stored := rawdb.ReadBlock(db, target.Hash(), target.NumberU64())
+	require.NotNil(t, stored)
+	committee.approve(t, db, target.Hash(), stored, indices)
 }
 
 // With a proof authorizing the redacted index, validation accepts the block and
 // still checks the surviving transaction.
 func TestValidateCanonicalChainRedactedPrecisionAccepts(t *testing.T) {
 	db, gspec, head, target := setupRedactedFirstTxChain(t)
-	writeProofIndices(t, db, target.Hash(), []uint64{0})
+	committee := newTestCommittee(t)
+	writeProofIndices(t, db, committee, target, []uint64{0})
 
 	bc, err := createBlockChain(db, DefaultCacheConfig, gspec, head.Hash())
 	require.NoError(t, err)
 	defer bc.Stop()
+	bc.SetRedactionPolicy(committee.policy(db))
 
 	require.NoError(t, bc.ValidateCanonicalChain())
 }
 
 // If the proof does NOT authorize the change at index 0, validation must catch
 // it (the change is treated as a corruption, not an authorized redaction).
+// The proof is signed and the link is fine, so the error can only come from
+// the position that nobody authorized.
 func TestValidateCanonicalChainRedactedPrecisionRejectsUnauthorized(t *testing.T) {
 	db, gspec, head, target := setupRedactedFirstTxChain(t)
-	writeProofIndices(t, db, target.Hash(), nil) // claims nothing was redacted
+	committee := newTestCommittee(t)
+	writeProofIndices(t, db, committee, target, nil) // claims nothing was redacted
 
 	bc, err := createBlockChain(db, DefaultCacheConfig, gspec, head.Hash())
 	require.NoError(t, err)
 	defer bc.Stop()
+	bc.SetRedactionPolicy(committee.policy(db))
 
-	require.Error(t, bc.ValidateCanonicalChain())
+	err = bc.ValidateCanonicalChain()
+	require.Error(t, err)
+	require.ErrorContains(t, err, "failed to find transaction")
 }

@@ -25,8 +25,8 @@ func TestValidParentLinkNewLink(t *testing.T) {
 	require.True(t, ValidParentLink(context.Background(), NewLink(parent), parent))
 }
 
-// Redacted parent: the child still points to the original hash (old link),
-// accepted because the stub policy approves everything.
+// Redacted parent: the child still points to the original hash (old link).
+// This is about the link itself, so every redaction is allowed here.
 func TestValidParentLinkOldLinkAfterRedaction(t *testing.T) {
 	t.Parallel()
 
@@ -36,7 +36,21 @@ func TestValidParentLinkOldLinkAfterRedaction(t *testing.T) {
 	parent.TxHash = common.Hash{0x12, 0x34} // simulate the redaction
 
 	require.NotEqual(t, childParentHash, NewLink(parent)) // new link is broken
-	require.True(t, ValidParentLink(context.Background(), childParentHash, parent))
+	require.True(t, ValidParentLinkWithPolicy(context.Background(), childParentHash, parent, AllowAllForTesting))
+}
+
+// With no policy set the old link of a redacted parent is not accepted, the
+// normal link still is.
+func TestValidParentLinkDefaultRejectsOldLink(t *testing.T) {
+	t.Parallel()
+
+	parent := sealedHeader()
+	childParentHash := parent.Hash()
+
+	parent.TxHash = common.Hash{0x12, 0x34}
+
+	require.False(t, ValidParentLink(context.Background(), childParentHash, parent))
+	require.True(t, ValidParentLink(context.Background(), NewLink(parent), parent))
 }
 
 // A hash that matches neither link must be rejected.

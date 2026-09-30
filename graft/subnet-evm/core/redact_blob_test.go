@@ -106,6 +106,9 @@ func TestRedactRemovesBlobFromStorage(t *testing.T) {
 	bc2, err := createBlockChain(db, DefaultCacheConfig, gspec, head.Hash())
 	require.NoError(t, err)
 	defer bc2.Stop()
+	// This test is about the blob leaving the database, not about who
+	// approved the redaction.
+	bc2.SetRedactionPolicy(redact.AllowAllForTesting)
 	t.Log("reopened the chain with cold caches (reads from disk)")
 
 	// The blob is gone, the chain validates and the next block's state root is unchanged.

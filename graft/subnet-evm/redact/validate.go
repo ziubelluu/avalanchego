@@ -18,13 +18,23 @@ type Policy interface {
 	Approved(ctx context.Context, parent *ethtypes.Header) bool
 }
 
-// alwaysApprove is the stub policy: it accepts every redaction.
-type alwaysApprove struct{}
+// rejectAll accepts no redaction: with no policy set, nobody can have
+// approved anything.
+type rejectAll struct{}
 
-func (alwaysApprove) Approved(context.Context, *ethtypes.Header) bool { return true }
+func (rejectAll) Approved(context.Context, *ethtypes.Header) bool { return false }
 
-// DefaultPolicy is what ValidParentLink uses until a real policy is wired in.
-var DefaultPolicy Policy = alwaysApprove{}
+// allowAll accepts every redaction without looking at any proof.
+type allowAll struct{}
+
+func (allowAll) Approved(context.Context, *ethtypes.Header) bool { return true }
+
+// DefaultPolicy is what a chain uses until a real policy is set.
+var DefaultPolicy Policy = rejectAll{}
+
+// AllowAllForTesting accepts every redaction. It's for the tests that are not
+// about who approved the redaction. Never set it on a real node.
+var AllowAllForTesting Policy = allowAll{}
 
 // ValidParentLink checks the child -> parent link with the default policy.
 func ValidParentLink(ctx context.Context, childParentHash common.Hash, parent *ethtypes.Header) bool {

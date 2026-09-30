@@ -76,6 +76,7 @@ func TestManualEditValidatesViaOldLink(t *testing.T) {
 	require.NotEqual(t, child.ParentHash(), redact.NewLink(redacted))
 	require.Equal(t, child.ParentHash(), redact.OldLink(redacted))
 
-	// And the dual-link validation accepts the redacted parent.
-	require.True(t, redact.ValidParentLink(context.Background(), child.ParentHash(), redacted))
+	// And the dual-link validation accepts the redacted parent. The test is
+	// about the link, not about who approved, so any redaction is allowed.
+	require.True(t, redact.ValidParentLinkWithPolicy(context.Background(), child.ParentHash(), redacted, redact.AllowAllForTesting))
 }

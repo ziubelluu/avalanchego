@@ -98,9 +98,10 @@ func TestRedactZeroesEOAInputAndPersists(t *testing.T) {
 	require.NotEqual(t, block0.TxHash(), got.TxHash())
 	require.Equal(t, block0.TxHash(), *customtypes.GetHeaderExtra(got.Header()).InitialTxHash)
 
-	// The new link is broken and the old link still matches the child.
+	// The new link is broken and the old link still matches the child. The
+	// test is about what gets saved, so any redaction is allowed.
 	require.NotEqual(t, block1.ParentHash(), redact.NewLink(got.Header()))
-	require.True(t, redact.ValidParentLink(context.Background(), block1.ParentHash(), got.Header()))
+	require.True(t, redact.ValidParentLinkWithPolicy(context.Background(), block1.ParentHash(), got.Header(), redact.AllowAllForTesting))
 
 	// The state root is untouched.
 	gotChild := rawdb.ReadBlock(db, block1.Hash(), block1.NumberU64())
