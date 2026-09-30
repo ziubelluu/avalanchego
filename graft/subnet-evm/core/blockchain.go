@@ -145,6 +145,10 @@ var (
 	// deposit only.
 	errRedactionKindMismatch = errors.New("redaction: the block was already redacted with another kind of proof")
 	errRedactionOtherDeposit = errors.New("redaction: the block already has a redacted deposit, only that one can be redacted again")
+	// A new tx proposal on a block must list every position already redacted,
+	// and those positions stay redacted: their calldata can't come back.
+	errRedactionNotCumulative  = errors.New("redaction: the proposal leaves out an already redacted position")
+	errRedactionPositionChange = errors.New("redaction: an already redacted position must stay redacted")
 
 	// A block whose parent was redacted goes in only if the redaction is
 	// approved and the parent's content still holds.
@@ -586,13 +590,23 @@ func (bc *BlockChain) RedactStored(original *types.Block, newTxs []*types.Transa
 	if err != nil {
 		return nil, err
 	}
-	var sp *redact.StateProposal
-	if kind == redact.KindState {
+	var (
+		sp      *redact.StateProposal
+		txProof *redact.Proof
+	)
+	switch kind {
+	case redact.KindState:
 		stateProof, err := redact.StateProofFromBytes(proof)
 		if err != nil {
 			return nil, err
 		}
 		sp = &stateProof.Proposal
+	case redact.KindTx:
+		p, err := redact.ProofFromBytes(proof)
+		if err != nil {
+			return nil, err
+		}
+		txProof = p
 	}
 
 	// One kind of proof per block, and one deposit per block. Redacting the
@@ -606,6 +620,25 @@ func (bc *BlockChain) RedactStored(original *types.Block, newTxs []*types.Transa
 			old, err := redact.StateProofFromBytes(existing)
 			if err == nil && (old.Proposal.DepositAddr != sp.DepositAddr || old.Proposal.ID != sp.ID) {
 				return nil, errRedactionOtherDeposit
+			}
+		}
+		if err == nil && kind == redact.KindTx {
+			// The new proposal says everything that is redacted in the block,
+			// so it must repeat the old positions, and their calldata stays empty.
+			old, err := redact.ProofFromBytes(existing)
+			if err == nil {
+				listed := make(map[uint64]bool, len(txProof.Proposal.RedactedIndices))
+				for _, i := range txProof.Proposal.RedactedIndices {
+					listed[i] = true
+				}
+				for _, i := range old.Proposal.RedactedIndices {
+					if !listed[i] {
+						return nil, fmt.Errorf("%w: position %d", errRedactionNotCumulative, i)
+					}
+					if int(i) >= len(newTxs) || len(newTxs[i].Data()) != 0 {
+						return nil, fmt.Errorf("%w: position %d", errRedactionPositionChange, i)
+					}
+				}
 			}
 		}
 	}
