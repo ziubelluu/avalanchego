@@ -1,0 +1,41 @@
+{
+  "config": {
+    "chainId": 99999,
+    "chameleonHashConfig": {
+      "blockTimestamp": 0
+    },
+    "feeConfig": {
+      "gasLimit": 200000000,
+      "targetBlockRate": 2,
+      "minBaseFee": 1000000000,
+      "targetGas": 400000000,
+      "baseFeeChangeDenominator": 48,
+      "minBlockGasCost": 0,
+      "maxBlockGasCost": 10000000,
+      "blockGasCostStep": 500000
+    }
+  },
+  "nonce": "0x0",
+  "timestamp": "0x5fcb13d0",
+  "extraData": "0x00",
+  "gasLimit": "0xbebc200",
+  "difficulty": "0x0",
+  "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "coinbase": "0x0000000000000000000000000000000000000000",
+  "alloc": {
+    "0fa8ea536be85f32724d57a37758761b86416123": {
+      "balance": "0x52b7d2dcc80cd2e4000000"
+    },
+    "8db97c7cece249c2b98bdc0226cc4c2a57bf52fc": {
+      "balance": "0x52b7d2dcc80cd2e4000000"
+    }
+  },
+  "airdropHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "airdropAmount": null,
+  "number": "0x0",
+  "gasUsed": "0x0",
+  "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "baseFeePerGas": null,
+  "excessBlobGas": null,
+  "blobGasUsed": null
+}

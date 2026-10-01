@@ -1,0 +1,6 @@
+{
+  "admin-api-enabled": true,
+  "local-txs-enabled": true,
+  "log-level": "info",
+  "warp-api-enabled": true
+}
