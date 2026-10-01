@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/core/types"
@@ -14,6 +16,7 @@ import (
 
 	warpprecompile "github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/contracts/warp"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/chameleon"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/network/p2p"
@@ -100,10 +103,11 @@ func (vm *VM) RedactStateDeposit(
 		return common.Hash{}, nil, err
 	}
 
-	forger, err := redact.NewForgerFromEnv(redact.NewApprovedProposal(sp), RedactTrapdoorEnvVar)
+	tk, err := vm.loadTrapdoor()
 	if err != nil {
 		return common.Hash{}, nil, err
 	}
+	forger := redact.NewForger(redact.NewApprovedProposal(sp), tk)
 
 	rPrime, err := forger.Forge(ctx, sp, blob, randomness, newBlob)
 	if err != nil {
@@ -325,4 +329,19 @@ func (vm *VM) CollectRedactionProof(ctx context.Context, kind string, proposalBy
 		return nil, fmt.Errorf("%w: %w", errProofBelowQuorum, err)
 	}
 	return proof.Bytes()
+}
+
+// loadTrapdoor reads the authority trapdoor: from the env var if it's set,
+// otherwise from the file named in the chain config. A node with neither can't
+// forge.
+func (vm *VM) loadTrapdoor() (chameleon.Trapdoor, error) {
+	path := vm.config.RedactTrapdoorFile
+	if os.Getenv(RedactTrapdoorEnvVar) != "" || path == "" {
+		return chameleon.LoadTrapdoorEnv(RedactTrapdoorEnvVar)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return chameleon.Trapdoor{}, fmt.Errorf("reading the trapdoor file: %w", err)
+	}
+	return chameleon.LoadTrapdoorHex(strings.TrimSpace(string(raw)))
 }

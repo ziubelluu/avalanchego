@@ -44,6 +44,7 @@ Configuration is provided as a JSON object. All fields are optional unless other
 | `validators-api-enabled` | bool | Enable the validators API | `true` |
 | `admin-api-enabled` | bool | Enable the admin API for administrative operations | `false` |
 | `admin-api-dir` | string | Directory for admin API operations | - |
+| `redact-trapdoor-file` | string | File with the redaction authority trapdoor (hex). Used when `SUBNET_EVM_REDACT_TRAPDOOR` is not set | - |
 | `warp-api-enabled` | bool | Enable the Warp API for cross-chain messaging | `false` |
 
 ### API Limits and Security

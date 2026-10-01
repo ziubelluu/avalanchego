@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/hex"
 	"math/big"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/ava-labs/libevm/common"
@@ -249,4 +251,32 @@ func TestRedactStateDepositAppliesApprovedRedaction(t *testing.T) {
 
 	// The policy the VM installed accepts the redacted block.
 	require.NoError(vm.blockChain.ValidateCanonicalChain())
+}
+
+// TestRedactStateDepositTrapdoorFromFile: the trapdoor can also come from the
+// file named in the chain config, when the env var is not set.
+func TestRedactStateDepositTrapdoorFromFile(t *testing.T) {
+	require := require.New(t)
+	d := setupVMDeposit(t)
+	vm := d.tvm.vm
+	t.Setenv(RedactTrapdoorEnvVar, "")
+
+	blobPrime := []byte{}
+	sp := d.proposal(blobPrime)
+	approved := d.committee.signState(t, vm, sp, 0, 1, 2)
+	redactNow := func() error {
+		_, _, err := vm.RedactStateDeposit(context.Background(), d.block.Hash(), d.depositAddr, d.id, d.blob, d.r, blobPrime, approved, 1)
+		return err
+	}
+
+	require.Error(redactNow(), "no env var and no file: this node can't forge")
+
+	path := filepath.Join(t.TempDir(), "trapdoor")
+	require.NoError(os.WriteFile(path, []byte(hex.EncodeToString(d.tk.Bytes())+"\n"), 0o600))
+	vm.config.RedactTrapdoorFile = path
+	require.NoError(redactNow())
+
+	got := vm.blockChain.GetBlockByHash(d.block.Hash())
+	require.NotNil(got)
+	require.True(redact.IsRedacted(got.Header()))
 }

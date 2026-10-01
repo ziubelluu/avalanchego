@@ -40,6 +40,10 @@ type Config struct {
 	AdminAPIDir          string `json:"admin-api-dir"`
 	WarpAPIEnabled       bool   `json:"warp-api-enabled"`
 
+	// RedactTrapdoorFile is a file with the authority trapdoor (hex). Only the
+	// authority's node sets it.
+	RedactTrapdoorFile string `json:"redact-trapdoor-file"`
+
 	// EnabledEthAPIs is a list of Ethereum services that should be enabled
 	// If none is specified, then we use the default list [defaultEnabledAPIs]
 	EnabledEthAPIs []string `json:"eth-apis"`
