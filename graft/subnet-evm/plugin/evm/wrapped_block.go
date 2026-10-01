@@ -24,6 +24,7 @@ import (
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/plugin/evm/customtypes"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/plugin/evm/extension"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/precompileconfig"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/snow/consensus/snowman"
 	"github.com/ava-labs/avalanchego/snow/engine/snowman/block"
@@ -65,8 +66,15 @@ type wrappedBlock struct {
 
 // wrapBlock returns a new Block wrapping the ethBlock type and implementing the snowman.Block interface
 func wrapBlock(ethBlock *types.Block, vm *VM) (*wrappedBlock, error) {
+	// A redacted block keeps the ID it was accepted with, its old link: that's
+	// how the engine and the other nodes know it. For any other block the old
+	// link is the hash.
+	id := ethBlock.Hash()
+	if header := ethBlock.Header(); redact.IsRedacted(header) {
+		id = redact.OldLink(header)
+	}
 	b := &wrappedBlock{
-		id:       ids.ID(ethBlock.Hash()),
+		id:       ids.ID(id),
 		ethBlock: ethBlock,
 		vm:       vm,
 	}

@@ -62,10 +62,18 @@ func newRedactCommittee(t *testing.T, vm *VM) *redactCommittee {
 		byIndex[i] = byPK[string(v.PublicKeyBytes)]
 	}
 
+	// Only the warp validator set is ours, the rest still goes to the state the
+	// harness gave the VM (the VM needs it to start again after a restart).
+	prev := vm.ctx.ValidatorState
 	vm.ctx.ValidatorState = &validatorstest.State{
 		GetWarpValidatorSetsF: func(context.Context, uint64) (map[ids.ID]validators.WarpSet, error) {
 			return map[ids.ID]validators.WarpSet{vm.ctx.SubnetID: ws}, nil
 		},
+		GetMinimumHeightF:       prev.GetMinimumHeight,
+		GetCurrentHeightF:       prev.GetCurrentHeight,
+		GetSubnetIDF:            prev.GetSubnetID,
+		GetValidatorSetF:        prev.GetValidatorSet,
+		GetCurrentValidatorSetF: prev.GetCurrentValidatorSet,
 	}
 	return &redactCommittee{ws: ws, byIndex: byIndex}
 }

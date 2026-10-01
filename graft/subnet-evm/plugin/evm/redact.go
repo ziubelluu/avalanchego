@@ -12,9 +12,10 @@ import (
 	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/crypto"
 
-	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
 	warpprecompile "github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/contracts/warp"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
+	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/network/p2p"
 	"github.com/ava-labs/avalanchego/network/p2p/acp118"
 
@@ -125,7 +126,32 @@ func (vm *VM) RedactStateDeposit(
 	if err != nil {
 		return common.Hash{}, nil, err
 	}
+	if err := vm.forgetOriginalBlock(redacted); err != nil {
+		return common.Hash{}, nil, err
+	}
 	return redacted.Hash(), rPrime, nil
+}
+
+// forgetOriginalBlock drops the VM's own copy of a block that was just
+// redacted. The VM keeps the blocks it gives to the engine in a cache of its
+// own, and without this the engine and the peers would still get the block as
+// it was. If the block is the last accepted one, the VM also holds it outside
+// the cache, so that gets replaced too.
+func (vm *VM) forgetOriginalBlock(redacted *types.Block) error {
+	vm.State.Flush()
+
+	lastAcceptedID, err := vm.State.LastAccepted(context.Background())
+	if err != nil {
+		return err
+	}
+	if lastAcceptedID != ids.ID(redact.OldLink(redacted.Header())) {
+		return nil
+	}
+	wrapped, err := wrapBlock(redacted, vm)
+	if err != nil {
+		return err
+	}
+	return vm.State.SetLastAcceptedBlock(wrapped)
 }
 
 // RedactTransactions does a tx-channel (old/new-link) redaction on a running
@@ -190,6 +216,9 @@ func (vm *VM) RedactTransactions(ctx context.Context, originalHash common.Hash, 
 
 	applied, err := bc.RedactStored(original, newTxs, proofBytes)
 	if err != nil {
+		return common.Hash{}, err
+	}
+	if err := vm.forgetOriginalBlock(applied); err != nil {
 		return common.Hash{}, err
 	}
 	return applied.Hash(), nil

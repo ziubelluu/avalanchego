@@ -45,6 +45,7 @@ import (
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/plugin/evm/customheader"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/plugin/evm/customtypes"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/precompileconfig"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact"
 	"github.com/ava-labs/avalanchego/utils/timer/mockable"
 	"github.com/ava-labs/avalanchego/utils/units"
 	"github.com/ava-labs/avalanchego/vms/evm/predicate"
@@ -146,8 +147,10 @@ func (w *worker) commitNewWork(predicateContext *precompileconfig.PredicateConte
 		timestampMS = uint64(tstart.UnixMilli())
 	)
 
+	// The parent is pointed to by its old link: if it was redacted that's not
+	// its hash anymore, but it's still where it is stored.
 	header := &types.Header{
-		ParentHash: parent.Hash(),
+		ParentHash: redact.OldLink(parent),
 		Number:     new(big.Int).Add(parent.Number, common.Big1),
 		Time:       timestamp,
 	}
