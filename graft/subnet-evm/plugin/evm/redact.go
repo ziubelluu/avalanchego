@@ -32,6 +32,8 @@ const (
 // authority's node sets it; without it RedactStateDeposit can't forge.
 const RedactTrapdoorEnvVar = "SUBNET_EVM_REDACT_TRAPDOOR"
 
+var errProofBelowQuorum = errors.New("not enough validators signed the proposal")
+
 // RedactStateDeposit does a state-data redaction end-to-end on a running node:
 // builds the proposal, stores the committee proof, forges r' for newBlob (only if
 // the vote passed), rewrites the store tx with the new (blob', r') and applies it
@@ -299,11 +301,17 @@ func (vm *VM) CollectRedactionProof(ctx context.Context, kind string, proposalBy
 	warpSDKClient := vm.P2PNetwork().NewClient(p2p.SignatureRequestHandlerID, vm.P2PValidators())
 	aggregator := acp118.NewSignatureAggregator(vm.ctx.Log, warpSDKClient)
 
+	// The aggregator gives back what it got even if not enough validators
+	// signed, so the proof is checked here before handing it out.
 	if txProposal != nil {
 		proof, err := redact.ProduceProof(ctx, aggregator, txProposal, vm.ctx.NetworkID, vm.ctx.ChainID, ws,
 			warpprecompile.WarpDefaultQuorumNumerator, warpprecompile.WarpQuorumDenominator)
 		if err != nil {
 			return nil, err
+		}
+		if err := redact.VerifyRedactionProof(proof, vm.ctx.NetworkID, vm.ctx.ChainID, ws,
+			warpprecompile.WarpDefaultQuorumNumerator, warpprecompile.WarpQuorumDenominator); err != nil {
+			return nil, fmt.Errorf("%w: %w", errProofBelowQuorum, err)
 		}
 		return proof.Bytes()
 	}
@@ -311,6 +319,10 @@ func (vm *VM) CollectRedactionProof(ctx context.Context, kind string, proposalBy
 		warpprecompile.WarpDefaultQuorumNumerator, warpprecompile.WarpQuorumDenominator)
 	if err != nil {
 		return nil, err
+	}
+	if err := redact.VerifyStateProof(proof, vm.ctx.NetworkID, vm.ctx.ChainID, ws,
+		warpprecompile.WarpDefaultQuorumNumerator, warpprecompile.WarpQuorumDenominator); err != nil {
+		return nil, fmt.Errorf("%w: %w", errProofBelowQuorum, err)
 	}
 	return proof.Bytes()
 }
