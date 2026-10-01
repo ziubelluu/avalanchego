@@ -210,3 +210,19 @@ func TestBlockChainAPI_stateQueryBlockNumberAllowed(t *testing.T) {
 		})
 	}
 }
+
+// The header given out over RPC carries the initial tx root, so a client can
+// tell a redacted block: it's the one where the two roots differ.
+func TestRPCMarshalHeaderInitialTxRoot(t *testing.T) {
+	initial := common.Hash{0x11}
+	head := customtypes.WithHeaderExtra(
+		&types.Header{Number: big.NewInt(1), Difficulty: big.NewInt(1), TxHash: common.Hash{0x22}},
+		&customtypes.HeaderExtra{InitialTxHash: &initial},
+	)
+	m := RPCMarshalHeader(head)
+	require.Equal(t, initial, m["initialTransactionsRoot"])
+	require.Equal(t, common.Hash{0x22}, m["transactionsRoot"])
+
+	m = RPCMarshalHeader(&types.Header{Number: big.NewInt(1), Difficulty: big.NewInt(1)})
+	require.NotContains(t, m, "initialTransactionsRoot")
+}

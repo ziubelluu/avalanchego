@@ -140,6 +140,9 @@ func (h *HeaderExtra) PostRPCMarshal(_ *ethtypes.Header, m map[string]any) {
 	if h.MinDelayExcess != nil {
 		m["minDelayExcess"] = hexutil.Uint64(*h.MinDelayExcess)
 	}
+	if h.InitialTxHash != nil {
+		m["initialTransactionsRoot"] = *h.InitialTxHash
+	}
 }
 
 func (h *HeaderSerializable) updateFromEth(eth *ethtypes.Header) {

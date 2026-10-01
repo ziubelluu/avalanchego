@@ -1278,6 +1278,9 @@ func RPCMarshalHeader(head *types.Header) map[string]interface{} {
 	if headExtra.MinDelayExcess != nil {
 		result["minDelayExcess"] = hexutil.Uint64(*headExtra.MinDelayExcess)
 	}
+	if headExtra.InitialTxHash != nil {
+		result["initialTransactionsRoot"] = *headExtra.InitialTxHash
+	}
 	return result
 }
 

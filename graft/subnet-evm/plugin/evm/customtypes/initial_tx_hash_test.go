@@ -131,3 +131,16 @@ func TestInitialTxHashLegacyDecode(t *testing.T) {
 	require.Equal(t, hashWithoutField, hashRoundTripped,
 		"hash must be stable across encode/decode when InitialTxHash is absent")
 }
+
+// The RPC header shows the initial tx root, so a client can tell a redacted
+// block from the JSON alone.
+func TestInitialTxHashInRPCHeader(t *testing.T) {
+	initial := common.Hash{0x11}
+	m := map[string]any{}
+	(&HeaderExtra{InitialTxHash: &initial}).PostRPCMarshal(nil, m)
+	require.Equal(t, initial, m["initialTransactionsRoot"])
+
+	m = map[string]any{}
+	(&HeaderExtra{}).PostRPCMarshal(nil, m)
+	require.NotContains(t, m, "initialTransactionsRoot")
+}
