@@ -48,10 +48,10 @@ func NewForgerFromEnv(approver StateApprover, envVar string) (*Forger, error) {
 	return NewForger(approver, tk), nil
 }
 
-// Forge returns r' so that CH(blobPrime, r') == CH(blob, r), but only if the
-// committee approved [sp]. No approved vote -> ErrForgeNotApproved (and the
-// trapdoor is never touched). Wrong replacement blob -> ErrForgeBlobMismatch.
-// The digest in state doesn't change.
+// Forge returns r' so that (blobPrime, r') opens the digest of [sp] like
+// (blob, r) does, but only if the committee approved [sp]. No approved vote ->
+// ErrForgeNotApproved (and the trapdoor is never touched). Wrong replacement
+// blob -> ErrForgeBlobMismatch. The digest in state doesn't change.
 func (f *Forger) Forge(ctx context.Context, sp *StateProposal, blob, r, blobPrime []byte) (rPrime []byte, err error) {
 	if f.approver == nil || sp == nil || !f.approver.ApprovedState(ctx, sp) {
 		return nil, ErrForgeNotApproved
@@ -59,5 +59,5 @@ func (f *Forger) Forge(ctx context.Context, sp *StateProposal, blob, r, blobPrim
 	if crypto.Keccak256Hash(blobPrime) != sp.NewBlobHash {
 		return nil, ErrForgeBlobMismatch
 	}
-	return chameleon.Forge(f.trapdoor, blob, r, blobPrime)
+	return chameleon.Forge(f.trapdoor, blob, r, blobPrime, sp.Digest)
 }

@@ -20,9 +20,9 @@ import (
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/params"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/plugin/evm/customtypes"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/contracts/chameleonhash"
-	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/contracts/utilstest"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/chameleon"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
 	"github.com/ava-labs/avalanchego/utils"
 
 	sim "github.com/ava-labs/avalanchego/graft/subnet-evm/ethclient/simulated"
@@ -91,8 +91,8 @@ func TestStoreCommitsDigestOffStateBlob(t *testing.T) {
 	depositAddr := deployDeposit(t, backend, key, 0, hk.Bytes())
 
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
-	digest := chameleon.Hash(hk, blob, r)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(err)
 	require.Len(digest, redactabledeposit.DigestLen)
 	id := crypto.Keccak256Hash([]byte("deposit-1"))
 
@@ -146,9 +146,10 @@ func TestStoreRejectsInvalidOpening(t *testing.T) {
 	depositAddr := deployDeposit(t, backend, key, 0, hk.Bytes())
 
 	blob := bytes.Repeat([]byte{0xAB}, 64)
-	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(err)
 	bogusDigest := bytes.Repeat([]byte{0xFF}, redactabledeposit.DigestLen)
-	require.NotEqual(chameleon.Hash(hk, blob, r), bogusDigest)
+	require.NotEqual(digest, bogusDigest)
 	id := crypto.Keccak256Hash([]byte("bad-deposit"))
 
 	calldata, err := redactabledeposit.PackStore(id, blob, r, bogusDigest)
@@ -178,8 +179,8 @@ func TestStoreIsWriteOncePerID(t *testing.T) {
 	depositAddr := deployDeposit(t, backend, key, 0, hk.Bytes())
 
 	blob := bytes.Repeat([]byte{0xAB}, 64)
-	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
-	digest := chameleon.Hash(hk, blob, r)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(err)
 	id := crypto.Keccak256Hash([]byte("deposit-1"))
 
 	calldata, err := redactabledeposit.PackStore(id, blob, r, digest)

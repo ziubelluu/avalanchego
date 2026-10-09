@@ -1,156 +1,265 @@
 // Copyright (C) 2019, Ava Labs, Inc. All rights reserved.
 // See the file LICENSE for licensing terms.
 
-// Package chameleon is the chameleon hash from the Ateniese et al. paper
-// (section 3.4.2): h = r - (y^H(m||r) * g^s mod p) mod q, with trapdoor x
-// and public key y = g^x.
+// Package chameleon is the fully collision-resistant chameleon hash of Derler,
+// Samelin and Slamanig ("Bringing Order to Chaos: The Case of
+// Collision-Resistant Chameleon-Hashes", Construction 10), on G1 of BLS12-381.
 //
-// Forge picks a fresh random k every time, so seeing the openings of a
-// redaction (the calldata before and after) doesn't give x away.
+// The digest is an ElGamal encryption of the message under the public key y:
+// h = (c1, c2) = (g^rho, m * y^rho). The "randomness" r is a non-interactive
+// OR-proof that either you know rho (you computed the hash honestly) or you
+// know x, the trapdoor. Whoever hashes proves the first branch and fakes the
+// second; whoever holds x does the opposite, and that's how a collision is
+// made without touching the digest.
+//
+// The blob is turned into a group element with hash-to-curve first, and the
+// statement (y, h, m) goes into the challenge, as the paper asks.
 package chameleon
 
 import (
-	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
 	"errors"
 	"math/big"
+
+	blst "github.com/supranational/blst/bindings/go"
 )
 
 var (
-	// x can't be 0 (y would be 1), and an empty Trapdoor has no x at all.
-	errZeroTrapdoor = errors.New("chameleon: trapdoor is zero")
-	// r||s has the wrong length or r or s is >= q.
+	errNoTrapdoor    = errors.New("chameleon: trapdoor is not set")
 	errBadRandomness = errors.New("chameleon: malformed randomness")
+	errBadDigest     = errors.New("chameleon: malformed digest")
+	errBadOpening    = errors.New("chameleon: the opening does not verify")
+	errChallenge     = errors.New("chameleon: challenge hashed to zero")
 )
 
-// PublicKey is y = g^x mod p.
+// PublicKey is y = g^x.
 type PublicKey struct {
-	Y *big.Int
+	y *blst.P1
 }
 
 // Trapdoor is the secret x. Keep it local, never put it on chain.
-// y is here too so Forge doesn't have to recompute it from x every time.
+// y is kept too so Forge doesn't recompute it every time.
 type Trapdoor struct {
-	X *big.Int
-	y *big.Int
+	x *big.Int
+	y *blst.P1
 }
 
-// hashToScalar is H(m||r): SHA-256 of m followed by r (r is always 256
-// bytes, so you know where m ends), read as a number. It's already < q.
-func hashToScalar(m []byte, r *big.Int) *big.Int {
-	h := sha256.New()
-	h.Write(m)
-	h.Write(pad(r))
-	return new(big.Int).SetBytes(h.Sum(nil))
+// PublicKey gives back y.
+func (tk Trapdoor) PublicKey() PublicKey {
+	return PublicKey{y: tk.y}
 }
 
-// randScalar picks a random number in [1, q-1].
+// randScalar picks a random number in [0, q-1].
 func randScalar() (*big.Int, error) {
-	k, err := rand.Int(rand.Reader, new(big.Int).Sub(Q, big.NewInt(1)))
-	if err != nil {
-		return nil, err
-	}
-	return k.Add(k, big.NewInt(1)), nil
+	return rand.Int(rand.Reader, Order)
 }
 
-// splitRandomness reads r and s out of r||s. Both must be < q.
-func splitRandomness(rs []byte) (r, s *big.Int, ok bool) {
+// mul is p^k. k is reduced mod q first; k = 0 gives the identity.
+func mul(p *blst.P1, k *big.Int) *blst.P1 {
+	k = new(big.Int).Mod(k, Order)
+	if k.Sign() == 0 {
+		return new(blst.P1) // the zero value is the point at infinity
+	}
+	var s blst.Scalar
+	if s.Deserialize(padScalar(k)) == nil {
+		panic("chameleon: reduced scalar refused by blst")
+	}
+	return p.Mult(&s)
+}
+
+// mulNeg is p^(-k).
+func mulNeg(p *blst.P1, k *big.Int) *blst.P1 {
+	return mul(p, new(big.Int).Neg(k))
+}
+
+// toPoint maps the blob into G1.
+func toPoint(m []byte) *blst.P1 {
+	return blst.HashToG1(m, dstMessage)
+}
+
+// decodePoint reads a compressed point and makes sure it's a real element of
+// G1: on the curve, in the right subgroup, and not the point at infinity.
+func decodePoint(b []byte) (*blst.P1, bool) {
+	if len(b) != PointLen || b[0]&0x40 != 0 {
+		return nil, false
+	}
+	var a blst.P1Affine
+	if a.Uncompress(b) == nil || !a.InG1() {
+		return nil, false
+	}
+	var p blst.P1
+	p.FromAffine(&a)
+	return &p, true
+}
+
+// decodeScalar reads a big-endian number and refuses anything >= q.
+func decodeScalar(b []byte) (*big.Int, bool) {
+	v := new(big.Int).SetBytes(b)
+	return v, v.Cmp(Order) < 0
+}
+
+// splitDigest reads (c1, c2).
+func splitDigest(digest []byte) (c1, c2 *blst.P1, ok bool) {
+	if len(digest) != DigestLen {
+		return nil, nil, false
+	}
+	if c1, ok = decodePoint(digest[:PointLen]); !ok {
+		return nil, nil, false
+	}
+	if c2, ok = decodePoint(digest[PointLen:]); !ok {
+		return nil, nil, false
+	}
+	return c1, c2, true
+}
+
+// splitRandomness reads (e1, e2, s1, s2).
+func splitRandomness(rs []byte) (e1, e2, s1, s2 *big.Int, ok bool) {
 	if len(rs) != RandomnessLen {
-		return nil, nil, false
+		return nil, nil, nil, nil, false
 	}
-	r = new(big.Int).SetBytes(rs[:ElementLen])
-	s = new(big.Int).SetBytes(rs[ElementLen:])
-	if r.Cmp(Q) >= 0 || s.Cmp(Q) >= 0 {
-		return nil, nil, false
+	parts := make([]*big.Int, 4)
+	for i := range parts {
+		if parts[i], ok = decodeScalar(rs[i*ScalarLen : (i+1)*ScalarLen]); !ok {
+			return nil, nil, nil, nil, false
+		}
 	}
-	return r, s, true
+	return parts[0], parts[1], parts[2], parts[3], true
 }
 
-// joinRandomness puts r and s back together.
-func joinRandomness(r, s *big.Int) []byte {
-	return append(pad(r), pad(s)...)
+func joinRandomness(e1, e2, s1, s2 *big.Int) []byte {
+	out := make([]byte, 0, RandomnessLen)
+	for _, v := range []*big.Int{e1, e2, s1, s2} {
+		out = append(out, padScalar(new(big.Int).Mod(v, Order))...)
+	}
+	return out
 }
 
-// NewRandomness picks a fresh (r, s). This is what you use to hash a blob.
-func NewRandomness() ([]byte, error) {
-	r, err := randScalar()
-	if err != nil {
-		return nil, err
+// challenge is the Fiat-Shamir hash e = H((y, h, m), (u11, u12, u2)), all
+// points compressed, hashed into Z_q with hash-to-field.
+func challenge(y, c1, c2, m, u11, u12, u2 *blst.P1) (*big.Int, error) {
+	msg := make([]byte, 0, 7*PointLen)
+	for _, p := range []*blst.P1{y, c1, c2, m, u11, u12, u2} {
+		msg = append(msg, p.Compress()...)
 	}
-	s, err := randScalar()
-	if err != nil {
-		return nil, err
+	s := blst.HashToScalar(msg, dstChallenge)
+	if s == nil {
+		return nil, errChallenge
 	}
-	return joinRandomness(r, s), nil
+	return new(big.Int).SetBytes(s.ToBEndian()), nil
 }
 
-// KeyGen picks a random x and returns the public key y = g^x.
+// KeyGen picks a random x in [1, q-1] and returns y = g^x with it.
 func KeyGen() (hk PublicKey, tk Trapdoor, err error) {
-	x, err := randScalar()
+	x, err := rand.Int(rand.Reader, new(big.Int).Sub(Order, big.NewInt(1)))
 	if err != nil {
 		return PublicKey{}, Trapdoor{}, err
 	}
-	y := new(big.Int).Exp(G, x, P)
-	return PublicKey{Y: y}, Trapdoor{X: x, y: y}, nil
+	x.Add(x, big.NewInt(1))
+	y := mul(g, x)
+	return PublicKey{y: y}, Trapdoor{x: x, y: y}, nil
 }
 
-// digestInt computes h = r - (y^H(m||r) * g^s mod p) mod q as a number.
-func digestInt(y *big.Int, m []byte, r, s *big.Int) *big.Int {
-	e := hashToScalar(m, r)
-	t := new(big.Int).Exp(y, e, P)
-	t.Mul(t, new(big.Int).Exp(G, s, P))
-	t.Mod(t, P)
-	h := new(big.Int).Sub(r, t)
-	return h.Mod(h, Q)
-}
-
-// Hash returns the digest of m with randomness rs = r||s (DigestLen bytes).
-// nil if rs is malformed or the key is empty (nil never verifies).
-func Hash(hk PublicKey, m, rs []byte) (digest []byte) {
-	r, s, ok := splitRandomness(rs)
-	if !ok || hk.Y == nil {
-		return nil
+// Hash encrypts m under y and proves it knows rho. It returns the digest
+// (c1, c2) and the randomness (e1, e2, s1, s2); the second branch of the OR
+// is simulated with a random (e2, s2).
+func Hash(hk PublicKey, m []byte) (digest, rs []byte, err error) {
+	if hk.y == nil {
+		return nil, nil, errBadDigest
 	}
-	return pad(digestInt(hk.Y, m, r, s))
+	M := toPoint(m)
+
+	var rho, k1, e2, s2 *big.Int
+	for _, p := range []**big.Int{&rho, &k1, &e2, &s2} {
+		if *p, err = randScalar(); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	c1 := mul(g, rho)
+	c2 := M.Add(mul(hk.y, rho))
+
+	u11 := mul(g, k1)
+	u12 := mul(hk.y, k1)
+	u2 := mul(g, s2).Add(mulNeg(hk.y, e2))
+
+	e, err := challenge(hk.y, c1, c2, M, u11, u12, u2)
+	if err != nil {
+		return nil, nil, err
+	}
+	e1 := new(big.Int).Sub(e, e2)
+	s1 := new(big.Int).Mul(e1, rho)
+	s1.Add(s1, k1)
+
+	digest = append(c1.Compress(), c2.Compress()...)
+	return digest, joinRandomness(e1, e2, s1, s2), nil
 }
 
-// Verify checks that digest == Hash(m, rs). No secret needed.
+// Verify checks the OR-proof rs for the statement (y, digest, m).
+// No secret needed, and nothing is kept between calls.
 func Verify(hk PublicKey, m, rs, digest []byte) bool {
-	d := Hash(hk, m, rs)
-	return d != nil && bytes.Equal(d, digest)
+	if hk.y == nil {
+		return false
+	}
+	c1, c2, ok := splitDigest(digest)
+	if !ok {
+		return false
+	}
+	e1, e2, s1, s2, ok := splitRandomness(rs)
+	if !ok {
+		return false
+	}
+	M := toPoint(m)
+
+	u11 := mul(g, s1).Add(mulNeg(c1, e1))
+	u12 := mul(hk.y, s1).Add(mulNeg(c2.Sub(M), e1))
+	u2 := mul(g, s2).Add(mulNeg(hk.y, e2))
+
+	e, err := challenge(hk.y, c1, c2, M, u11, u12, u2)
+	if err != nil {
+		return false
+	}
+	sum := new(big.Int).Add(e1, e2)
+	sum.Mod(sum, Order)
+	return sum.Cmp(e) == 0
 }
 
-// Forge uses x to find (r', s') so that Hash(m', r'||s') == Hash(m, r||s).
-// k is random every time, so two forges of the same thing give different
-// results and don't leak x.
-func Forge(tk Trapdoor, m, rs, mPrime []byte) (rsPrime []byte, err error) {
-	if tk.X == nil || tk.X.Sign() == 0 {
-		return nil, errZeroTrapdoor
+// Forge uses x to open the same digest with mPrime: it first checks that
+// (m, rs) really opens digest, then proves the trapdoor branch and simulates
+// the other one. The result is random every time.
+func Forge(tk Trapdoor, m, rs, mPrime, digest []byte) (rsPrime []byte, err error) {
+	if tk.x == nil || tk.y == nil {
+		return nil, errNoTrapdoor
 	}
-	r, s, ok := splitRandomness(rs)
-	if !ok {
-		return nil, errBadRandomness
+	if !Verify(PublicKey{y: tk.y}, m, rs, digest) {
+		if _, _, ok := splitDigest(digest); !ok {
+			return nil, errBadDigest
+		}
+		if _, _, _, _, ok := splitRandomness(rs); !ok {
+			return nil, errBadRandomness
+		}
+		return nil, errBadOpening
 	}
-	y := tk.y
-	if y == nil {
-		y = new(big.Int).Exp(G, tk.X, P)
-	}
-	h := digestInt(y, m, r, s)
+	c1, c2, _ := splitDigest(digest)
+	M := toPoint(mPrime)
 
-	k, err := randScalar()
+	var k2, e1, s1 *big.Int
+	for _, p := range []**big.Int{&k2, &e1, &s1} {
+		if *p, err = randScalar(); err != nil {
+			return nil, err
+		}
+	}
+
+	u11 := mul(g, s1).Add(mulNeg(c1, e1))
+	u12 := mul(tk.y, s1).Add(mulNeg(c2.Sub(M), e1))
+	u2 := mul(g, k2)
+
+	e, err := challenge(tk.y, c1, c2, M, u11, u12, u2)
 	if err != nil {
 		return nil, err
 	}
-	// r' = h + (g^k mod p) mod q
-	rPrime := new(big.Int).Exp(G, k, P)
-	rPrime.Add(rPrime, h)
-	rPrime.Mod(rPrime, Q)
-	// s' = k - H(m'||r') * x mod q
-	sPrime := hashToScalar(mPrime, rPrime)
-	sPrime.Mul(sPrime, tk.X)
-	sPrime.Sub(k, sPrime)
-	sPrime.Mod(sPrime, Q)
+	e2 := new(big.Int).Sub(e, e1)
+	s2 := new(big.Int).Mul(e2, tk.x)
+	s2.Add(s2, k2)
 
-	return joinRandomness(rPrime, sPrime), nil
+	return joinRandomness(e1, e2, s1, s2), nil
 }

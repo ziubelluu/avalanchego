@@ -15,9 +15,9 @@ import (
 	"github.com/ava-labs/libevm/trie"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/chameleon"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
 )
 
 // stubApprover is a committee approver whose outcome is fixed, so the test can
@@ -36,8 +36,8 @@ func TestApplyOffStateRedaction(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
-	digest := chameleon.Hash(hk, blob, r)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(err)
 	id := crypto.Keccak256Hash([]byte("deposit-1"))
 
 	origCalldata, err := redactabledeposit.PackStore(id, blob, r, digest)
@@ -45,7 +45,7 @@ func TestApplyOffStateRedaction(t *testing.T) {
 
 	// The vote-gated forge: produce r' for the empty replacement blob.
 	blobPrime := []byte{}
-	sp := &redact.StateProposal{NewBlobHash: crypto.Keccak256Hash(blobPrime)}
+	sp := &redact.StateProposal{NewBlobHash: crypto.Keccak256Hash(blobPrime), Digest: digest}
 	forger := redact.NewForger(stubApprover{approve: true}, tk)
 	rPrime, err := forger.Forge(ctx, sp, blob, r, blobPrime)
 	require.NoError(err)
@@ -113,8 +113,8 @@ func TestFindAndRebuildStoreTx(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := bytes.Repeat([]byte{0x11}, 64)
-	r := bytes.Repeat([]byte{0x22}, chameleon.RandomnessLen)
-	digest := chameleon.Hash(hk, blob, r)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(err)
 	id := crypto.Keccak256Hash([]byte("dep"))
 	to := common.Address{0x0d}
 	other := common.Address{0x99}
@@ -146,7 +146,7 @@ func TestFindAndRebuildStoreTx(t *testing.T) {
 	_, ok = redactabledeposit.FindStoreTx(block, to, crypto.Keccak256Hash([]byte("nope")))
 	require.False(ok)
 
-	rPrime, err := chameleon.Forge(tk, blob, r, []byte{})
+	rPrime, err := chameleon.Forge(tk, blob, r, []byte{}, digest)
 	require.NoError(err)
 	redactedTx, err := redactabledeposit.RebuildRedactedStoreTx(found, []byte{}, rPrime)
 	require.NoError(err)

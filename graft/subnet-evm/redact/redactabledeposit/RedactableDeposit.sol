@@ -3,17 +3,17 @@ pragma solidity ^0.8.24;
 
 /// @dev The chameleon-hash precompile (does the crypto Solidity can't do).
 interface IChameleonHash {
-    function hash(bytes calldata hk, bytes calldata m, bytes calldata r)
+    function verify(bytes calldata hk, bytes calldata m, bytes calldata r, bytes calldata digest)
         external
         view
-        returns (bytes memory digest);
+        returns (bool ok);
 }
 
 /// @title RedactableDeposit
 /// @notice A normal contract that keeps only the chameleon digest in state.
 /// The opening (blob, randomness) goes in calldata and is never stored, so it
-/// can be redacted later. `store` checks on-chain that CH(blob, r) == digest by
-/// calling the chameleon-hash precompile. Anyone can deploy one.
+/// can be redacted later. `store` checks on-chain that (blob, r) opens digest
+/// by calling the chameleon-hash precompile. Anyone can deploy one.
 contract RedactableDeposit {
     /// @dev The chameleon-hash precompile address.
     address private constant CHAMELEON = 0x0300000000000000000000000000000000000000;
@@ -31,8 +31,8 @@ contract RedactableDeposit {
         authorityKey = hk;
     }
 
-    /// @notice Save `digest` for `id` after checking CH(blob, randomness) == digest.
-    /// blob and randomness are only in calldata, not stored.
+    /// @notice Save `digest` for `id` after checking that (blob, randomness)
+    /// opens it. blob and randomness are only in calldata, not stored.
     function store(
         bytes32 id,
         bytes calldata blob,
@@ -41,8 +41,10 @@ contract RedactableDeposit {
     ) external {
         require(digests[id].length == 0, "id already used");
 
-        bytes memory recomputed = IChameleonHash(CHAMELEON).hash(authorityKey, blob, randomness);
-        require(keccak256(recomputed) == keccak256(digest), "opening does not commit to digest");
+        require(
+            IChameleonHash(CHAMELEON).verify(authorityKey, blob, randomness, digest),
+            "opening does not commit to digest"
+        );
 
         digests[id] = digest;
         emit Deposited(id, digest);

@@ -29,9 +29,9 @@ import (
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/params"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/params/extras"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/contracts/chameleonhash"
-	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/chameleon"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
 )
 
 // buildCommittee creates n equally-weighted validators with BLS keys and a
@@ -209,8 +209,8 @@ func TestChameleonHappyPathE2E(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
-	digest := chameleon.Hash(hk, blob, r)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(err)
 	id := crypto.Keccak256Hash([]byte("deposit-1"))
 
 	dc := setupDepositChain(t, hk.Bytes(), id, blob, r, digest)
@@ -304,8 +304,8 @@ func TestChameleonConsensusRejectsTamperedRedaction(t *testing.T) {
 	hk, _, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
-	digest := chameleon.Hash(hk, blob, r)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(err)
 	id := crypto.Keccak256Hash([]byte("deposit-1"))
 
 	dc := setupDepositChain(t, hk.Bytes(), id, blob, r, digest)
@@ -343,8 +343,8 @@ func TestChameleonRedactStoredEnforcesOpening(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
-	digest := chameleon.Hash(hk, blob, r)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(err)
 	id := crypto.Keccak256Hash([]byte("deposit-1"))
 
 	dc := setupDepositChain(t, hk.Bytes(), id, blob, r, digest)
@@ -367,7 +367,7 @@ func TestChameleonRedactStoredEnforcesOpening(t *testing.T) {
 	require.Error(err, "RedactStored must refuse an invalid opening")
 
 	// Correctly forged opening: RedactStored applies it.
-	rPrime, err := chameleon.Forge(tk, blob, r, []byte{})
+	rPrime, err := chameleon.Forge(tk, blob, r, []byte{}, digest)
 	require.NoError(err)
 	validCalldata, err := redactabledeposit.RedactedStoreCalldata(dc.storeTx.Data(), []byte{}, rPrime)
 	require.NoError(err)
@@ -383,8 +383,8 @@ func TestChameleonForgeRejectedWithoutVote(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := []byte("the secret blob to redact")
-	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
-	digest := chameleon.Hash(hk, blob, r)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(err)
 	blobPrime := []byte{}
 
 	sp := &redact.StateProposal{
@@ -441,18 +441,18 @@ func TestChameleonTamperedOpeningRejected(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := []byte("original content")
-	r := bytes.Repeat([]byte{0x09}, chameleon.RandomnessLen)
-	digest := chameleon.Hash(hk, blob, r)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(err)
 	blobPrime := []byte{}
 
-	rPrime, err := chameleon.Forge(tk, blob, r, blobPrime)
+	rPrime, err := chameleon.Forge(tk, blob, r, blobPrime, digest)
 	require.NoError(err)
 	require.True(chameleon.Verify(hk, blobPrime, rPrime, digest), "honest forge must verify")
 
 	// flip the last byte of r' (the first one could make it >= q, which
 	// fails for a different reason)
 	rTampered := bytes.Clone(rPrime)
-	rTampered[chameleon.ElementLen-1] ^= 0xFF
+	rTampered[chameleon.ScalarLen-1] ^= 0xFF
 	require.False(chameleon.Verify(hk, blobPrime, rTampered, digest), "tampered r' must not verify")
 	require.False(chameleon.Verify(hk, []byte("smuggled content"), rPrime, digest), "tampered blob' must not verify")
 }

@@ -49,7 +49,7 @@ import (
 	agoutils "github.com/ava-labs/avalanchego/utils"
 )
 
-const subcommands = "start genesis keygen randomness hash deploy-tx store-tx plain-tx decode-store digestof-calldata decode-digestof state-proposal tx-proposal"
+const subcommands = "start genesis keygen hash deploy-tx store-tx plain-tx decode-store digestof-calldata decode-digestof state-proposal tx-proposal"
 
 func must(err error) {
 	if err != nil {
@@ -91,19 +91,17 @@ func main() {
 		hk, tk, err := chameleon.KeyGen()
 		must(err)
 		out(map[string]string{"publicKey": hex.EncodeToString(hk.Bytes()), "trapdoor": hex.EncodeToString(tk.Bytes())})
-	case "randomness":
-		must(fs.Parse(args))
-		rs, err := chameleon.NewRandomness()
-		must(err)
-		fmt.Println(hex.EncodeToString(rs))
 	case "hash":
+		// the digest and the randomness come out together: the randomness is
+		// a proof about the digest, so it can't be picked first
 		hk := fs.String("hk", "", "authority public key, hex")
 		blob := fs.String("blob", "", "content, utf8 text")
-		rs := fs.String("rs", "", "randomness r||s, hex")
 		must(fs.Parse(args))
 		pk, err := chameleon.PublicKeyFromBytes(hexArg(*hk))
 		must(err)
-		fmt.Println(hex.EncodeToString(chameleon.Hash(pk, []byte(*blob), hexArg(*rs))))
+		digest, rs, err := chameleon.Hash(pk, []byte(*blob))
+		must(err)
+		out(map[string]string{"digest": hex.EncodeToString(digest), "randomness": hex.EncodeToString(rs)})
 	case "deploy-tx":
 		chainID := fs.Int64("chainid", 99999, "")
 		nonce := fs.Uint64("nonce", 0, "")
@@ -119,7 +117,7 @@ func main() {
 		to := fs.String("to", "", "deposit contract address")
 		id := fs.String("id", "", "deposit id, hex 32 bytes")
 		blob := fs.String("blob", "", "content, utf8 text")
-		rs := fs.String("rs", "", "randomness r||s, hex")
+		rs := fs.String("rs", "", "randomness, hex")
 		digest := fs.String("digest", "", "digest, hex")
 		must(fs.Parse(args))
 		calldata, err := redactabledeposit.PackStore(common.HexToHash(*id), []byte(*blob), hexArg(*rs), hexArg(*digest))

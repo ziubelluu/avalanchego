@@ -65,8 +65,7 @@ subnet has no Warp validator set and no proof can be collected.
 rl deploy-tx --hk $HK                                   # -> rawTx, contract ($CONTRACT)
 rpc eth_sendRawTransaction "[\"$RAW\"]" $RPC
 ID=0x$(printf 'deposit-1' | sha256sum | cut -c1-64)
-RS=$(rl randomness)
-D=$(rl hash --hk $HK --blob "some private text" --rs $RS)
+rl hash --hk $HK --blob "some private text"              # -> digest ($D), randomness ($RS)
 rl store-tx --to $CONTRACT --id $ID --blob "some private text" --rs $RS --digest $D
 rpc eth_sendRawTransaction "[\"$RAW\"]" $RPC            # -> store tx hash ($TX)
 rpc eth_getTransactionReceipt "[\"$TX\"]" $RPC          # -> blockHash ($BLOCK)

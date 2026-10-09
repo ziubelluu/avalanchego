@@ -5,340 +5,347 @@ package chameleon
 
 import (
 	"bytes"
+	"crypto/rand"
 	"math/big"
 	"testing"
+
+	blst "github.com/supranational/blst/bindings/go"
 )
 
-// freshRandomness returns a random r||s.
-func freshRandomness(t *testing.T) []byte {
+func keyPair(t *testing.T) (PublicKey, Trapdoor) {
 	t.Helper()
-	rs, err := NewRandomness()
-	if err != nil {
-		t.Fatalf("NewRandomness: %v", err)
-	}
-	return rs
-}
-
-// TestGroupParameters checks the constants are right: p and q prime,
-// p = 2q+1, g of order q. If I got a digit wrong in the hex this fails.
-func TestGroupParameters(t *testing.T) {
-	if P.BitLen() != 2048 {
-		t.Fatalf("p has %d bits, want 2048", P.BitLen())
-	}
-	if !P.ProbablyPrime(32) {
-		t.Fatal("p is not prime")
-	}
-	if !Q.ProbablyPrime(32) {
-		t.Fatal("q is not prime")
-	}
-	twoQPlusOne := new(big.Int).Lsh(Q, 1)
-	twoQPlusOne.Add(twoQPlusOne, big.NewInt(1))
-	if twoQPlusOne.Cmp(P) != 0 {
-		t.Fatal("p != 2q+1")
-	}
-	// g has order q: it's not 1 and g^q == 1
-	if G.Cmp(big.NewInt(1)) == 0 {
-		t.Fatal("g is 1")
-	}
-	if new(big.Int).Exp(G, Q, P).Cmp(big.NewInt(1)) != 0 {
-		t.Fatal("g^q != 1 mod p, g is not in the order-q subgroup")
-	}
-	// and 2 is a quadratic residue because p = 7 mod 8
-	if new(big.Int).Mod(P, big.NewInt(8)).Int64() != 7 {
-		t.Fatal("p != 7 mod 8, 2 would not be a quadratic residue")
-	}
-}
-
-func TestPublicKeyInSubgroup(t *testing.T) {
-	hk, _, err := KeyGen()
+	hk, tk, err := KeyGen()
 	if err != nil {
 		t.Fatalf("KeyGen: %v", err)
 	}
-	if new(big.Int).Exp(hk.Y, Q, P).Cmp(big.NewInt(1)) != 0 {
-		t.Fatal("y^q != 1, KeyGen produced a key outside QR_p")
+	return hk, tk
+}
+
+// hashOf is Hash with the error checked.
+func hashOf(t *testing.T, hk PublicKey, m []byte) (digest, rs []byte) {
+	t.Helper()
+	digest, rs, err := Hash(hk, m)
+	if err != nil {
+		t.Fatalf("Hash: %v", err)
+	}
+	return digest, rs
+}
+
+func TestSizes(t *testing.T) {
+	hk, tk := keyPair(t)
+	digest, rs := hashOf(t, hk, []byte("blob"))
+	for name, got := range map[string][2]int{
+		"public key": {len(hk.Bytes()), PublicKeyLen},
+		"trapdoor":   {len(tk.Bytes()), TrapdoorLen},
+		"digest":     {len(digest), DigestLen},
+		"randomness": {len(rs), RandomnessLen},
+	} {
+		if got[0] != got[1] {
+			t.Errorf("%s is %d bytes, want %d", name, got[0], got[1])
+		}
+	}
+	if PublicKeyLen != 48 || TrapdoorLen != 32 || DigestLen != 96 || RandomnessLen != 128 {
+		t.Fatal("sizes are not the ones of G1 on BLS12-381")
 	}
 }
 
 func TestHashVerifyRoundTrip(t *testing.T) {
-	hk, _, err := KeyGen()
-	if err != nil {
-		t.Fatalf("KeyGen: %v", err)
-	}
+	hk, _ := keyPair(t)
 	m := []byte("the original inert blob")
-	r := freshRandomness(t)
-
-	digest := Hash(hk, m, r)
-	if len(digest) != DigestLen {
-		t.Fatalf("digest len = %d, want %d", len(digest), DigestLen)
+	digest, rs := hashOf(t, hk, m)
+	if !Verify(hk, m, rs, digest) {
+		t.Fatal("Verify(Hash(m)) == false, want true")
 	}
-	if !Verify(hk, m, r, digest) {
-		t.Fatal("Verify(Hash(m, r)) == false, want true")
+	// empty message too
+	d2, rs2 := hashOf(t, hk, nil)
+	if !Verify(hk, nil, rs2, d2) || !Verify(hk, []byte{}, rs2, d2) {
+		t.Fatal("empty message does not verify")
+	}
+}
+
+func TestHashIsRandomized(t *testing.T) {
+	hk, _ := keyPair(t)
+	m := []byte("same blob")
+	d1, rs1 := hashOf(t, hk, m)
+	d2, rs2 := hashOf(t, hk, m)
+	if bytes.Equal(d1, d2) || bytes.Equal(rs1, rs2) {
+		t.Fatal("two hashes of the same message came out identical")
 	}
 }
 
 func TestForgeCollision(t *testing.T) {
-	hk, tk, err := KeyGen()
-	if err != nil {
-		t.Fatalf("KeyGen: %v", err)
-	}
+	hk, tk := keyPair(t)
 	m := []byte("original blob")
 	mPrime := []byte("redacted blob")
-	r := freshRandomness(t)
+	digest, rs := hashOf(t, hk, m)
 
-	digest := Hash(hk, m, r)
-
-	rPrime, err := Forge(tk, m, r, mPrime)
+	rsPrime, err := Forge(tk, m, rs, mPrime, digest)
 	if err != nil {
 		t.Fatalf("Forge: %v", err)
 	}
-	if len(rPrime) != RandomnessLen {
-		t.Fatalf("forged randomness len = %d, want %d", len(rPrime), RandomnessLen)
+	if len(rsPrime) != RandomnessLen {
+		t.Fatalf("forged randomness len = %d, want %d", len(rsPrime), RandomnessLen)
 	}
-
-	// The collision: the new (m', r') hashes to the SAME digest, so the value
-	// committed in state never changes after a redaction.
-	if !Verify(hk, mPrime, rPrime, digest) {
-		t.Fatal("forged (m', r') does not collide with original digest")
+	// The collision: (m', r') opens the SAME digest, so what sits in state
+	// never changes after a redaction.
+	if !Verify(hk, mPrime, rsPrime, digest) {
+		t.Fatal("forged (m', r') does not open the original digest")
 	}
-	if !bytes.Equal(Hash(hk, mPrime, rPrime), digest) {
-		t.Fatal("Hash(m', r') != Hash(m, r)")
-	}
-}
-
-func TestForgeSameMessageStillVerifies(t *testing.T) {
-	// Forging to the same message gives a different opening (k is new
-	// every time), but it must still verify.
-	hk, tk, err := KeyGen()
-	if err != nil {
-		t.Fatalf("KeyGen: %v", err)
-	}
-	m := []byte("same blob")
-	r := freshRandomness(t)
-
-	rPrime, err := Forge(tk, m, r, m)
-	if err != nil {
-		t.Fatalf("Forge: %v", err)
-	}
-	if !Verify(hk, m, rPrime, Hash(hk, m, r)) {
-		t.Fatal("identity forge broke the digest")
+	// and the old opening still does too
+	if !Verify(hk, m, rs, digest) {
+		t.Fatal("the original opening stopped verifying")
 	}
 }
 
-// TestForgeIsRandomized: forge the same thing twice, get two different
-// openings. That's the random k.
+func TestForgeToEmptyAndSameMessage(t *testing.T) {
+	hk, tk := keyPair(t)
+	m := []byte("original blob")
+	digest, rs := hashOf(t, hk, m)
+
+	rsEmpty, err := Forge(tk, m, rs, []byte{}, digest)
+	if err != nil {
+		t.Fatalf("Forge to empty: %v", err)
+	}
+	if !Verify(hk, []byte{}, rsEmpty, digest) {
+		t.Fatal("forge to the empty message did not open the digest")
+	}
+
+	rsSame, err := Forge(tk, m, rs, m, digest)
+	if err != nil {
+		t.Fatalf("Forge to same: %v", err)
+	}
+	if bytes.Equal(rsSame, rs) {
+		t.Fatal("forge to the same message gave back the same randomness")
+	}
+	if !Verify(hk, m, rsSame, digest) {
+		t.Fatal("forge to the same message did not verify")
+	}
+}
+
 func TestForgeIsRandomized(t *testing.T) {
-	hk, tk, err := KeyGen()
-	if err != nil {
-		t.Fatalf("KeyGen: %v", err)
-	}
+	hk, tk := keyPair(t)
 	m := []byte("original")
 	mPrime := []byte("redacted")
-	r := freshRandomness(t)
-	digest := Hash(hk, m, r)
-
-	rs1, err := Forge(tk, m, r, mPrime)
+	digest, rs := hashOf(t, hk, m)
+	a, err := Forge(tk, m, rs, mPrime, digest)
 	if err != nil {
-		t.Fatalf("Forge: %v", err)
+		t.Fatal(err)
 	}
-	rs2, err := Forge(tk, m, r, mPrime)
+	b, err := Forge(tk, m, rs, mPrime, digest)
 	if err != nil {
-		t.Fatalf("Forge: %v", err)
+		t.Fatal(err)
 	}
-	if bytes.Equal(rs1, rs2) {
+	if bytes.Equal(a, b) {
 		t.Fatal("two forges gave the same randomness")
 	}
-	if !Verify(hk, mPrime, rs1, digest) || !Verify(hk, mPrime, rs2, digest) {
-		t.Fatal("one of the two forged openings does not verify")
+	if !Verify(hk, mPrime, a, digest) || !Verify(hk, mPrime, b, digest) {
+		t.Fatal("a forge did not verify")
 	}
 }
 
-// TestNoKeyExposure: a redaction publishes two openings of the same digest
-// (the calldata before and after). Try to get x out of them with
-// x = (H(m) - H(m')) / (b' - b), on r and on s: it doesn't come out, and
-// g^result is not y.
-func TestNoKeyExposure(t *testing.T) {
-	hk, tk, err := KeyGen()
+// A redaction can be redacted again: forging from a forged opening works,
+// and so does forging twice from the same opening.
+func TestForgeChained(t *testing.T) {
+	hk, tk := keyPair(t)
+	m := []byte("v1")
+	digest, rs := hashOf(t, hk, m)
+
+	rs2, err := Forge(tk, m, rs, []byte("v2"), digest)
 	if err != nil {
-		t.Fatalf("KeyGen: %v", err)
+		t.Fatal(err)
 	}
-	m := []byte("original blob")
-	mPrime := []byte("")
-	rs := freshRandomness(t)
-	digest := Hash(hk, m, rs)
-
-	rsPrime, err := Forge(tk, m, rs, mPrime)
+	rs3, err := Forge(tk, []byte("v2"), rs2, []byte("v3"), digest)
 	if err != nil {
-		t.Fatalf("Forge: %v", err)
+		t.Fatal(err)
 	}
-	if !Verify(hk, mPrime, rsPrime, digest) {
-		t.Fatal("forge did not collide")
+	if !Verify(hk, []byte("v3"), rs3, digest) {
+		t.Fatal("chained forge did not open the digest")
 	}
-
-	r, s, _ := splitRandomness(rs)
-	rPrime, sPrime, _ := splitRandomness(rsPrime)
-	hm := hashToScalar(m, r)
-	hmPrime := hashToScalar(mPrime, rPrime)
-
-	// try x = (H(m) - H(m')) / (b' - b) with b = r and then b = s
-	extract := func(b, bPrime *big.Int) *big.Int {
-		num := new(big.Int).Sub(hm, hmPrime)
-		den := new(big.Int).Sub(bPrime, b)
-		den.Mod(den, Q)
-		if den.Sign() == 0 {
-			return nil
-		}
-		den.ModInverse(den, Q)
-		return num.Mul(num, den).Mod(num, Q)
-	}
-	for name, cand := range map[string]*big.Int{
-		"r": extract(r, rPrime),
-		"s": extract(s, sPrime),
-	} {
-		if cand == nil {
-			continue
-		}
-		if cand.Cmp(tk.X) == 0 {
-			t.Fatalf("Krawczyk-Rabin extraction over %s recovered the trapdoor", name)
-		}
-		if new(big.Int).Exp(G, cand, P).Cmp(hk.Y) == 0 {
-			t.Fatalf("extraction over %s gave a discrete log of y", name)
-		}
-	}
-
-	// and forging again from the forged opening still works
-	rsSecond, err := Forge(tk, mPrime, rsPrime, []byte("something else"))
+	rs3b, err := Forge(tk, m, rs, []byte("v3"), digest)
 	if err != nil {
-		t.Fatalf("second Forge: %v", err)
+		t.Fatal(err)
 	}
-	if !Verify(hk, []byte("something else"), rsSecond, digest) {
-		t.Fatal("chained forge did not collide")
+	if !Verify(hk, []byte("v3"), rs3b, digest) {
+		t.Fatal("second forge from the first opening did not open the digest")
 	}
 }
 
 func TestVerifyFailsWrongKey(t *testing.T) {
-	hk, _, err := KeyGen()
-	if err != nil {
-		t.Fatalf("KeyGen: %v", err)
-	}
-	other, _, err := KeyGen()
-	if err != nil {
-		t.Fatalf("KeyGen: %v", err)
-	}
+	hk, _ := keyPair(t)
+	other, _ := keyPair(t)
 	m := []byte("blob")
-	r := freshRandomness(t)
-
-	digest := Hash(hk, m, r)
-	if Verify(other, m, r, digest) {
+	digest, rs := hashOf(t, hk, m)
+	if Verify(other, m, rs, digest) {
 		t.Fatal("Verify accepted a digest under the wrong public key")
 	}
 }
 
 func TestVerifyFailsTamperedInputs(t *testing.T) {
-	hk, _, err := KeyGen()
-	if err != nil {
-		t.Fatalf("KeyGen: %v", err)
-	}
+	hk, _ := keyPair(t)
 	m := []byte("blob")
-	r := freshRandomness(t)
-	digest := Hash(hk, m, r)
+	digest, rs := hashOf(t, hk, m)
 
-	if Verify(hk, []byte("blob-tampered"), r, digest) {
+	if Verify(hk, []byte("blob-tampered"), rs, digest) {
 		t.Fatal("Verify accepted a tampered message")
 	}
-
-	// flip the last byte of r and of s (the first byte could make it >= q,
-	// which is a different error)
-	for _, i := range []int{ElementLen - 1, RandomnessLen - 1} {
-		rTampered := bytes.Clone(r)
-		rTampered[i] ^= 0xFF
-		if Verify(hk, m, rTampered, digest) {
-			t.Fatalf("Verify accepted randomness tampered at byte %d", i)
+	// each of the four scalars, changed by one in its last byte
+	for i := 0; i < 4; i++ {
+		bad := bytes.Clone(rs)
+		bad[(i+1)*ScalarLen-1] ^= 0x01
+		if Verify(hk, m, bad, digest) {
+			t.Fatalf("Verify accepted randomness with scalar %d changed", i)
 		}
 	}
-
-	dTampered := bytes.Clone(digest)
-	dTampered[len(dTampered)-1] ^= 0x01
-	if Verify(hk, m, r, dTampered) {
-		t.Fatal("Verify accepted a tampered digest")
+	// the digest: c1 and c2, flipping a bit of the x coordinate
+	for _, i := range []int{PointLen - 1, DigestLen - 1} {
+		bad := bytes.Clone(digest)
+		bad[i] ^= 0x01
+		if Verify(hk, m, rs, bad) {
+			t.Fatalf("Verify accepted a digest tampered at byte %d", i)
+		}
+	}
+	// a proof for (y, h, m) does not work for another m or another h
+	d2, _ := hashOf(t, hk, m)
+	if Verify(hk, m, rs, d2) {
+		t.Fatal("Verify accepted the proof of one digest for another digest")
 	}
 }
 
-func TestMalformedRandomness(t *testing.T) {
-	hk, tk, err := KeyGen()
-	if err != nil {
-		t.Fatalf("KeyGen: %v", err)
-	}
+func TestVerifyRejectsMalformed(t *testing.T) {
+	hk, tk := keyPair(t)
 	m := []byte("blob")
+	digest, rs := hashOf(t, hk, m)
 
-	// r = q is not allowed
-	tooBig := append(pad(Q), pad(big.NewInt(1))...)
-	for _, bad := range [][]byte{nil, make([]byte, 32), make([]byte, RandomnessLen-1), tooBig} {
-		if Hash(hk, m, bad) != nil {
-			t.Fatalf("Hash accepted randomness of len %d", len(bad))
+	// a scalar equal to q (the group order) is not reduced
+	tooBig := bytes.Clone(rs)
+	copy(tooBig[:ScalarLen], Order.FillBytes(make([]byte, ScalarLen)))
+
+	for name, bad := range map[string][]byte{
+		"nil":         nil,
+		"short":       make([]byte, RandomnessLen-1),
+		"long":        make([]byte, RandomnessLen+1),
+		"scalar >= q": tooBig,
+	} {
+		if Verify(hk, m, bad, digest) {
+			t.Fatalf("Verify accepted %s randomness", name)
 		}
-		if Verify(hk, m, bad, make([]byte, DigestLen)) {
-			t.Fatal("Verify accepted malformed randomness")
+		if _, err := Forge(tk, m, bad, m, digest); err == nil {
+			t.Fatalf("Forge accepted %s randomness", name)
 		}
-		if _, err := Forge(tk, m, bad, m); err == nil {
-			t.Fatal("Forge accepted malformed randomness")
+	}
+
+	notOnCurve := bytes.Clone(digest)
+	notOnCurve[0] = 0x80 | 0x40 // the compressed point at infinity flag plus garbage
+	notOnCurve[1] = 0xff
+	for name, bad := range map[string][]byte{
+		"nil":         nil,
+		"short":       digest[:DigestLen-1],
+		"not a point": notOnCurve,
+		"infinity c1": append(append([]byte{0xc0}, make([]byte, PointLen-1)...), digest[PointLen:]...),
+	} {
+		if Verify(hk, m, rs, bad) {
+			t.Fatalf("Verify accepted %s digest", name)
 		}
+		if _, err := Forge(tk, m, rs, m, bad); err == nil {
+			t.Fatalf("Forge accepted %s digest", name)
+		}
+	}
+}
+
+// A compressed point that is on the curve but not in the prime-order
+// subgroup must be refused wherever a point comes in from outside.
+func TestRejectsPointOutsideSubgroup(t *testing.T) {
+	var outside []byte
+	for i := 0; i < 10000 && outside == nil; i++ {
+		b := make([]byte, PointLen)
+		if _, err := rand.Read(b); err != nil {
+			t.Fatal(err)
+		}
+		b[0] = (b[0] & 0x1f) | 0x80 // compressed, not infinity, y sign from bit 5
+		var p blst.P1Affine
+		if p.Uncompress(b) != nil && !p.InG1() {
+			outside = b
+		}
+	}
+	if outside == nil {
+		t.Fatal("could not find a curve point outside G1")
+	}
+
+	if _, err := PublicKeyFromBytes(outside); err == nil {
+		t.Fatal("PublicKeyFromBytes accepted a point outside G1")
+	}
+	hk, tk := keyPair(t)
+	m := []byte("blob")
+	digest, rs := hashOf(t, hk, m)
+	bad := append(bytes.Clone(outside), digest[PointLen:]...)
+	if Verify(hk, m, rs, bad) {
+		t.Fatal("Verify accepted a digest with c1 outside G1")
+	}
+	if _, err := Forge(tk, m, rs, m, bad); err == nil {
+		t.Fatal("Forge accepted a digest with c1 outside G1")
 	}
 }
 
 func TestForgeWrongTrapdoorNoCollision(t *testing.T) {
-	hk, _, err := KeyGen()
-	if err != nil {
-		t.Fatalf("KeyGen: %v", err)
-	}
-	_, wrongTk, err := KeyGen()
-	if err != nil {
-		t.Fatalf("KeyGen: %v", err)
-	}
+	hk, _ := keyPair(t)
+	_, wrongTk := keyPair(t)
 	m := []byte("original")
 	mPrime := []byte("redacted")
-	r := freshRandomness(t)
-	digest := Hash(hk, m, r)
+	digest, rs := hashOf(t, hk, m)
 
-	rPrime, err := Forge(wrongTk, m, r, mPrime)
-	if err != nil {
-		t.Fatalf("Forge: %v", err)
+	rsPrime, err := Forge(wrongTk, m, rs, mPrime, digest)
+	if err == nil && Verify(hk, mPrime, rsPrime, digest) {
+		t.Fatal("forge with the wrong trapdoor still collided")
 	}
-	// A forge with the wrong trapdoor must NOT produce a collision.
-	if Verify(hk, mPrime, rPrime, digest) {
-		t.Fatal("forge with wrong trapdoor still collided")
+}
+
+// Forge checks the opening it is given first: a wrong (m, rs, digest) is an
+// error, not a forged collision for garbage.
+func TestForgeRefusesBadOpening(t *testing.T) {
+	hk, tk := keyPair(t)
+	digest, rs := hashOf(t, hk, []byte("original"))
+	if _, err := Forge(tk, []byte("not the original"), rs, []byte("x"), digest); err == nil {
+		t.Fatal("Forge accepted an opening that does not verify")
+	}
+	other, _ := hashOf(t, hk, []byte("original"))
+	if _, err := Forge(tk, []byte("original"), rs, []byte("x"), other); err == nil {
+		t.Fatal("Forge accepted a randomness for another digest")
 	}
 }
 
 func TestForgeZeroTrapdoorRejected(t *testing.T) {
-	var tk Trapdoor // X is nil
-	if _, err := Forge(tk, []byte("a"), freshRandomness(t), []byte("b")); err == nil {
-		t.Fatal("Forge accepted a zero trapdoor")
-	}
-	tk.X = new(big.Int)
-	if _, err := Forge(tk, []byte("a"), freshRandomness(t), []byte("b")); err == nil {
-		t.Fatal("Forge accepted x = 0")
+	hk, _ := keyPair(t)
+	digest, rs := hashOf(t, hk, []byte("a"))
+	var tk Trapdoor
+	if _, err := Forge(tk, []byte("a"), rs, []byte("b"), digest); err == nil {
+		t.Fatal("Forge accepted an empty trapdoor")
 	}
 }
 
 // A trapdoor loaded from bytes forges just like a fresh one.
 func TestForgeAfterReload(t *testing.T) {
-	hk, tk, err := KeyGen()
-	if err != nil {
-		t.Fatalf("KeyGen: %v", err)
-	}
+	hk, tk := keyPair(t)
 	reloaded, err := TrapdoorFromBytes(tk.Bytes())
 	if err != nil {
 		t.Fatalf("TrapdoorFromBytes: %v", err)
 	}
-	m := []byte("original")
-	r := freshRandomness(t)
-	digest := Hash(hk, m, r)
-
-	rPrime, err := Forge(reloaded, m, r, []byte("redacted"))
+	digest, rs := hashOf(t, hk, []byte("original"))
+	rsPrime, err := Forge(reloaded, []byte("original"), rs, []byte("redacted"), digest)
 	if err != nil {
 		t.Fatalf("Forge: %v", err)
 	}
-	if !Verify(hk, []byte("redacted"), rPrime, digest) {
-		t.Fatal("forge with reloaded trapdoor did not collide")
+	if !Verify(hk, []byte("redacted"), rsPrime, digest) {
+		t.Fatal("forge with the reloaded trapdoor did not collide")
+	}
+}
+
+// The scalar field order is the one of BLS12-381.
+func TestOrder(t *testing.T) {
+	want, _ := new(big.Int).SetString("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001", 16)
+	if Order.Cmp(want) != 0 {
+		t.Fatal("Order is not the BLS12-381 scalar field order")
+	}
+	if !Order.ProbablyPrime(32) {
+		t.Fatal("Order is not prime")
 	}
 }

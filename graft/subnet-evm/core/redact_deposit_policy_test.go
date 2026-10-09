@@ -40,8 +40,8 @@ func depositRedactionWith(t *testing.T, committee *testCommittee, approved, appl
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
-	digest := chameleon.Hash(hk, blob, r)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(err)
 	id := crypto.Keccak256Hash([]byte("deposit-1"))
 	dc := setupDepositChain(t, hk.Bytes(), id, blob, r, digest)
 	dc.bc.SetRedactionContentVerifier(redactabledeposit.VerifyRedactedBlock)
@@ -66,7 +66,7 @@ func depositRedactionWith(t *testing.T, committee *testCommittee, approved, appl
 	if err != nil {
 		// the forger refuses (no quorum, or content not the approved one):
 		// forge anyway, the point is to test what the chain does with it
-		rPrime, err = chameleon.Forge(tk, blob, r, applied)
+		rPrime, err = chameleon.Forge(tk, blob, r, applied, digest)
 		require.NoError(err)
 	}
 

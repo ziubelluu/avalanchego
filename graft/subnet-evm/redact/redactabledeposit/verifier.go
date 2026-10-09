@@ -17,7 +17,7 @@ import (
 
 var (
 	errCalldataDigestMismatch = errors.New("redactabledeposit: calldata digest does not match committed digest")
-	errOpeningMismatch        = errors.New("redactabledeposit: opening does not commit to digest: CH(blob, r) != D")
+	errOpeningMismatch        = errors.New("redactabledeposit: opening does not commit to digest: (blob, r) does not open D")
 	errStoreNotFound          = errors.New("redactabledeposit: the block has no store tx for the approved deposit")
 	errDigestNotApproved      = errors.New("redactabledeposit: the store tx digest is not the approved one")
 	errContentNotApproved     = errors.New("redactabledeposit: the content is not the one the committee approved")
@@ -25,7 +25,7 @@ var (
 
 // VerifyRedactedBlock checks every store call in [block]: if its target contract
 // has a committed digest for that id, then the calldata digest must match it and
-// CH(blob, r) must equal it (using the contract's public key). The contract
+// (blob, r) must open it (using the contract's public key). The contract
 // address comes from the tx recipient, so it works for ANY deposit contract.
 //
 // With a proposal it also ties the block to what the committee voted: the store

@@ -168,9 +168,8 @@ func setupVMDeposit(t *testing.T) *vmDeposit {
 	sendAndAccept(t, vm, 0, nil, 1_500_000, code)
 
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r, err := chameleon.NewRandomness()
+	digest, r, err := chameleon.Hash(hk, blob)
 	require.NoError(err)
-	digest := chameleon.Hash(hk, blob, r)
 	id := crypto.Keccak256Hash([]byte("deposit-1"))
 	calldata, err := redactabledeposit.PackStore(id, blob, r, digest)
 	require.NoError(err)

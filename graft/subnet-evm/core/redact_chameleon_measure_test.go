@@ -16,9 +16,9 @@ import (
 	"github.com/ava-labs/libevm/trie"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/chameleon"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
 )
 
 // buildStoreBlock builds a single-tx block whose tx calls store(id, blob, r, D),
@@ -57,8 +57,8 @@ func TestMeasureRootStableAcrossRedactions(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
-	digest := chameleon.Hash(hk, blob, r)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(err)
 
 	block0, origTx, key, signer := buildStoreBlock(t, blob, r, digest)
 	to := common.Address{0x0d}
@@ -69,7 +69,7 @@ func TestMeasureRootStableAcrossRedactions(t *testing.T) {
 		bytes.Repeat([]byte{0x55}, 4096),
 	}
 	for k, blobPrime := range replacements {
-		rPrime, err := chameleon.Forge(tk, blob, r, blobPrime)
+		rPrime, err := chameleon.Forge(tk, blob, r, blobPrime, digest)
 		require.NoError(err)
 		require.True(chameleon.Verify(hk, blobPrime, rPrime, digest), "redaction %d: collision must hold", k)
 
@@ -95,8 +95,8 @@ func BenchmarkTxChannelRedactionApply(b *testing.B) {
 	hk, _, err := chameleon.KeyGen()
 	require.NoError(b, err)
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
-	digest := chameleon.Hash(hk, blob, r)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(b, err)
 
 	block0, origTx, key, signer := buildStoreBlock(b, blob, r, digest)
 	to := common.Address{0x0d}
@@ -123,8 +123,8 @@ func BenchmarkStateRedactionApply(b *testing.B) {
 	require.NoError(b, err)
 	_ = hk
 	blob := bytes.Repeat([]byte{0xAB, 0xCD, 0xEF, 0x12}, 256)
-	r := bytes.Repeat([]byte{0x07}, chameleon.RandomnessLen)
-	digest := chameleon.Hash(hk, blob, r)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(b, err)
 
 	block0, origTx, key, signer := buildStoreBlock(b, blob, r, digest)
 	to := common.Address{0x0d}
@@ -133,7 +133,7 @@ func BenchmarkStateRedactionApply(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		rPrime, err := chameleon.Forge(tk, blob, r, blobPrime)
+		rPrime, err := chameleon.Forge(tk, blob, r, blobPrime, digest)
 		if err != nil {
 			b.Fatal(err)
 		}

@@ -36,11 +36,10 @@ func TestNewForgerFromEnv(t *testing.T) {
 	require.NoError(t, err)
 
 	blob := []byte("original content")
-	r := make([]byte, chameleon.RandomnessLen)
-	r[0] = 1
-	digest := chameleon.Hash(hk, blob, r)
+	digest, r, err := chameleon.Hash(hk, blob)
+	require.NoError(t, err)
 	blobPrime := []byte{}
-	sp := &StateProposal{NewBlobHash: crypto.Keccak256Hash(blobPrime)}
+	sp := &StateProposal{NewBlobHash: crypto.Keccak256Hash(blobPrime), Digest: digest}
 
 	rPrime, err := forger.Forge(context.Background(), sp, blob, r, blobPrime)
 	require.NoError(t, err)
