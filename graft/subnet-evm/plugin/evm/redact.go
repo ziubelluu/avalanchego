@@ -14,7 +14,6 @@ import (
 	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/crypto"
 
-	warpprecompile "github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/contracts/warp"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/chameleon"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
@@ -22,6 +21,7 @@ import (
 	"github.com/ava-labs/avalanchego/network/p2p"
 	"github.com/ava-labs/avalanchego/network/p2p/acp118"
 
+	warpprecompile "github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/contracts/warp"
 	avalancheWarp "github.com/ava-labs/avalanchego/vms/platformvm/warp"
 )
 

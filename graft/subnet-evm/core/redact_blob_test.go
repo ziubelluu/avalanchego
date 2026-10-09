@@ -92,7 +92,7 @@ func TestRedactRemovesBlobFromStorage(t *testing.T) {
 	// Before redaction the blob is in the database.
 	require.True(t, dbContains(db, blob), "blob should be stored before redaction")
 	oldInput := target.Transactions()[0].Data()
-	t.Logf("before redaction: blob found in the database")
+	t.Log("before redaction: blob found in the database")
 	t.Logf("old blob: %d bytes, starts with %x...", len(oldInput), oldInput[:16])
 
 	// Redact: replace the tx with an input-less one and persist the redacted block.

@@ -75,7 +75,7 @@ func setupCumulativeChain(t *testing.T) *cumulativeChain {
 
 	networkID := constants.UnitTestID
 	sourceChainID := ids.GenerateTestID()
-	ws, byIndex := buildCommittee(t, 3)
+	ws, byIndex := buildCommittee(t)
 	warpSet := func(context.Context, uint64) (validators.WarpSet, error) { return ws, nil }
 	policy := redact.NewCommitteePolicy(db, warpSet, networkID, sourceChainID, 2, 3)
 

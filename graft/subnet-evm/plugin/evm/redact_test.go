@@ -42,7 +42,6 @@ import (
 // the subnet validator set, so the real policy and the real forger can be
 // exercised on a VM.
 type redactCommittee struct {
-	ws      validators.WarpSet
 	byIndex map[int]bls.Signer
 }
 
@@ -77,7 +76,7 @@ func newRedactCommittee(t *testing.T, vm *VM) *redactCommittee {
 		GetValidatorSetF:        prev.GetValidatorSet,
 		GetCurrentValidatorSetF: prev.GetCurrentValidatorSet,
 	}
-	return &redactCommittee{ws: ws, byIndex: byIndex}
+	return &redactCommittee{byIndex: byIndex}
 }
 
 // signState signs a deposit proposal with the members in [signers].
@@ -208,11 +207,9 @@ func TestRedactStateDepositRejectsInvalidProofWithoutWriting(t *testing.T) {
 	sp := d.proposal(blobPrime)
 	belowQuorum := d.committee.signState(t, vm, sp, 0) // 1 of 3
 
-	_, _, err := vm.RedactStateDeposit(context.Background(), d.block.Hash(), d.depositAddr, d.id, d.blob, d.r, blobPrime, belowQuorum, 1)
+	_, _, err := vm.RedactStateDeposit(t.Context(), d.block.Hash(), d.depositAddr, d.id, d.blob, d.r, blobPrime, belowQuorum, 1)
 	require.Error(err, "a proof below the quorum must be refused")
 
-	_, err = redact.ReadStateRedactionProof(vm.chaindb, sp.Hash())
-	require.Error(err, "no proof must be stored for the proposal")
 	has, err := redact.HasRedactionProof(vm.chaindb, d.block.Hash())
 	require.NoError(err)
 	require.False(has, "no proof must be stored for the block")
@@ -233,7 +230,7 @@ func TestRedactStateDepositAppliesApprovedRedaction(t *testing.T) {
 	sp := d.proposal(blobPrime)
 	approved := d.committee.signState(t, vm, sp, 0, 1, 2)
 
-	redactedHash, rPrime, err := vm.RedactStateDeposit(context.Background(), d.block.Hash(), d.depositAddr, d.id, d.blob, d.r, blobPrime, approved, 1)
+	redactedHash, rPrime, err := vm.RedactStateDeposit(t.Context(), d.block.Hash(), d.depositAddr, d.id, d.blob, d.r, blobPrime, approved, 1)
 	require.NoError(err)
 	require.NotEqual(d.block.Hash(), redactedHash)
 	require.True(chameleon.Verify(d.hk, blobPrime, rPrime, d.digest), "the new opening must still give the digest")
@@ -264,7 +261,7 @@ func TestRedactStateDepositTrapdoorFromFile(t *testing.T) {
 	sp := d.proposal(blobPrime)
 	approved := d.committee.signState(t, vm, sp, 0, 1, 2)
 	redactNow := func() error {
-		_, _, err := vm.RedactStateDeposit(context.Background(), d.block.Hash(), d.depositAddr, d.id, d.blob, d.r, blobPrime, approved, 1)
+		_, _, err := vm.RedactStateDeposit(t.Context(), d.block.Hash(), d.depositAddr, d.id, d.blob, d.r, blobPrime, approved, 1)
 		return err
 	}
 

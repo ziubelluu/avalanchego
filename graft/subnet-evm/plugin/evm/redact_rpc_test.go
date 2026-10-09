@@ -59,7 +59,7 @@ func requireSignsOnly(t *testing.T, vm *VM, approved, other *avalancheWarp.Unsig
 	require.NoError(err)
 	require.Equal(approved.Bytes(), stored.Bytes())
 
-	sigBytes, err := vm.warpBackend.GetMessageSignature(context.Background(), approved)
+	sigBytes, err := vm.warpBackend.GetMessageSignature(t.Context(), approved)
 	require.NoError(err)
 	sig, err := bls.SignatureFromBytes(sigBytes)
 	require.NoError(err)
@@ -67,7 +67,7 @@ func requireSignsOnly(t *testing.T, vm *VM, approved, other *avalancheWarp.Unsig
 
 	// The other message was never approved: no signature for it, and the one
 	// we have is not valid for it.
-	_, err = vm.warpBackend.GetMessageSignature(context.Background(), other)
+	_, err = vm.warpBackend.GetMessageSignature(t.Context(), other)
 	require.Error(err, "a proposal that was not approved must not be signed")
 	_, err = vm.warpBackend.GetMessage(other.ID())
 	require.Error(err)
@@ -121,7 +121,7 @@ func TestApproveRedaction(t *testing.T) {
 			msg := warpMessage(t, vm, b)
 			_, err := vm.warpBackend.GetMessage(msg.ID())
 			require.Error(t, err, "no message must be stored for a refused proposal")
-			_, err = vm.warpBackend.GetMessageSignature(context.Background(), msg)
+			_, err = vm.warpBackend.GetMessageSignature(t.Context(), msg)
 			require.Error(t, err)
 		}
 	})
@@ -199,7 +199,7 @@ func TestCollectRedactionProof(t *testing.T) {
 	d := setupVMDeposit(t)
 	vm := d.tvm.vm
 	ws := selfValidator(t, d.tvm)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
 	t.Run("tx proposal", func(t *testing.T) {

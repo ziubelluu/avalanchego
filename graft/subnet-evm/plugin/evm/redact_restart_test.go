@@ -5,7 +5,6 @@ package evm
 
 import (
 	"bytes"
-	"context"
 	"testing"
 
 	"github.com/ava-labs/libevm/common"
@@ -22,7 +21,7 @@ import (
 // chain has to go on from there.
 func TestRedactedTipKeepsItsIDAcrossRestart(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	d := setupVMDeposit(t)
 	vm := d.tvm.vm
 

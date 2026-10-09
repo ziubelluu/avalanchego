@@ -57,7 +57,7 @@ type testCommittee struct {
 
 func newTestCommittee(t testing.TB) *testCommittee {
 	t.Helper()
-	ws, byIndex := buildCommittee(t, 3)
+	ws, byIndex := buildCommittee(t)
 	return &testCommittee{
 		networkID:     constants.UnitTestID,
 		sourceChainID: ids.GenerateTestID(),

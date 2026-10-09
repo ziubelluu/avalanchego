@@ -30,7 +30,7 @@ func (p stubApprover) ApprovedState(context.Context, *redact.StateProposal) bool
 // for ("", r') and apply it with RedactBlock; the digest and the roots stay put.
 func TestApplyOffStateRedaction(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Deposit material: digest D = CH(blob, r) committed in state.
 	hk, tk, err := chameleon.KeyGen()

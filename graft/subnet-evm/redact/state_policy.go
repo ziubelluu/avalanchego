@@ -7,9 +7,6 @@ import (
 	"context"
 
 	"github.com/ava-labs/libevm/common"
-	"github.com/ava-labs/libevm/ethdb"
-
-	"github.com/ava-labs/avalanchego/ids"
 )
 
 // StateApprover says whether a redaction (a StateProposal) was approved by the
@@ -32,58 +29,4 @@ func NewApprovedProposal(sp *StateProposal) StateApprover {
 
 func (a approvedProposal) ApprovedState(_ context.Context, sp *StateProposal) bool {
 	return sp != nil && sp.Hash() == a.hash
-}
-
-// committeeStatePolicy approves a redaction only if a stored proof for that exact
-// proposal reaches the quorum.
-type committeeStatePolicy struct {
-	proofDB       ethdb.KeyValueReader
-	warpSet       WarpSetFunc
-	networkID     uint32
-	sourceChainID ids.ID
-	quorumNum     uint64
-	quorumDen     uint64
-}
-
-// NewCommitteeStatePolicy builds the real approver (reads the proof from the DB).
-func NewCommitteeStatePolicy(
-	proofDB ethdb.KeyValueReader,
-	warpSet WarpSetFunc,
-	networkID uint32,
-	sourceChainID ids.ID,
-	quorumNum uint64,
-	quorumDen uint64,
-) StateApprover {
-	return &committeeStatePolicy{
-		proofDB:       proofDB,
-		warpSet:       warpSet,
-		networkID:     networkID,
-		sourceChainID: sourceChainID,
-		quorumNum:     quorumNum,
-		quorumDen:     quorumDen,
-	}
-}
-
-func (p *committeeStatePolicy) ApprovedState(ctx context.Context, sp *StateProposal) bool {
-	proposalHash := sp.Hash()
-
-	raw, err := ReadStateRedactionProof(p.proofDB, proposalHash)
-	if err != nil {
-		return false
-	}
-	proof, err := StateProofFromBytes(raw)
-	if err != nil {
-		return false
-	}
-
-	// Make sure the proof is for this exact proposal (no replay on another one).
-	if proof.Proposal.Hash() != proposalHash {
-		return false
-	}
-
-	ws, err := p.warpSet(ctx, sp.PChainHeight)
-	if err != nil {
-		return false
-	}
-	return VerifyStateProof(proof, p.networkID, p.sourceChainID, ws, p.quorumNum, p.quorumDen) == nil
 }

@@ -28,7 +28,7 @@ func TestNewWarpSetFuncReturnsSubnetSet(t *testing.T) {
 		},
 	}
 
-	got, err := NewWarpSetFunc(state, subnetID)(context.Background(), 10)
+	got, err := NewWarpSetFunc(state, subnetID)(t.Context(), 10)
 	require.NoError(t, err)
 	require.Equal(t, want, got)
 }
@@ -44,7 +44,7 @@ func TestNewWarpSetFuncMissingSubnet(t *testing.T) {
 		},
 	}
 
-	_, err := NewWarpSetFunc(state, ids.GenerateTestID())(context.Background(), 10)
+	_, err := NewWarpSetFunc(state, ids.GenerateTestID())(t.Context(), 10)
 	require.Error(t, err)
 }
 
@@ -60,6 +60,6 @@ func TestNewWarpSetFuncStateError(t *testing.T) {
 		},
 	}
 
-	_, err := NewWarpSetFunc(state, ids.GenerateTestID())(context.Background(), 10)
+	_, err := NewWarpSetFunc(state, ids.GenerateTestID())(t.Context(), 10)
 	require.ErrorIs(t, err, wantErr)
 }

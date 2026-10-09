@@ -5,7 +5,6 @@ package core
 
 import (
 	"bytes"
-	"context"
 	"crypto/ecdsa"
 	"math/big"
 	"testing"
@@ -17,6 +16,12 @@ import (
 	"github.com/ava-labs/libevm/ethdb"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/params"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/params/extras"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/contracts/chameleonhash"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/chameleon"
+	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/snow/validators"
 	"github.com/ava-labs/avalanchego/utils"
@@ -25,22 +30,15 @@ import (
 	"github.com/ava-labs/avalanchego/utils/crypto/bls/signer/localsigner"
 	"github.com/ava-labs/avalanchego/utils/set"
 	"github.com/ava-labs/avalanchego/vms/platformvm/warp"
-
-	"github.com/ava-labs/avalanchego/graft/subnet-evm/params"
-	"github.com/ava-labs/avalanchego/graft/subnet-evm/params/extras"
-	"github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/contracts/chameleonhash"
-	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact"
-	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/chameleon"
-	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
 )
 
-// buildCommittee creates n equally-weighted validators with BLS keys and a
+// buildCommittee creates three equally-weighted validators with BLS keys and a
 // canonical-index -> signer lookup.
-func buildCommittee(t testing.TB, n int) (validators.WarpSet, map[int]bls.Signer) {
+func buildCommittee(t testing.TB) (validators.WarpSet, map[int]bls.Signer) {
 	t.Helper()
 	byPK := map[string]bls.Signer{}
 	vdrSet := map[ids.NodeID]*validators.GetValidatorOutput{}
-	for i := 0; i < n; i++ {
+	for i := 0; i < 3; i++ {
 		sk, err := localsigner.New()
 		require.NoError(t, err)
 		nodeID := ids.GenerateTestNodeID()
@@ -204,7 +202,7 @@ func buildDepositChain(t *testing.T, hkBytes []byte, id common.Hash, blob, r, di
 // re-spawned node checks CH("", r') == D with the roots unchanged.
 func TestChameleonHappyPathE2E(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
@@ -221,7 +219,7 @@ func TestChameleonHappyPathE2E(t *testing.T) {
 	// Committee votes to authorize the redaction (intent: blob -> empty).
 	networkID := constants.UnitTestID
 	sourceChainID := ids.GenerateTestID()
-	ws, byIndex := buildCommittee(t, 3)
+	ws, byIndex := buildCommittee(t)
 	blobPrime := []byte{}
 	sp := &redact.StateProposal{
 		OriginalHash: dc.block0.Hash(),
@@ -232,15 +230,10 @@ func TestChameleonHappyPathE2E(t *testing.T) {
 		PChainHeight: 1,
 	}
 	proof := signStateProof(t, networkID, sourceChainID, sp, byIndex, 0, 1, 2)
-	proofBytes, err := proof.Bytes()
-	require.NoError(err)
-	require.NoError(redact.WriteStateRedactionProof(dc.db, sp.Hash(), proofBytes))
+	require.NoError(redact.VerifyStateProof(proof, networkID, sourceChainID, ws, 2, 3))
 
-	warpSet := func(context.Context, uint64) (validators.WarpSet, error) { return ws, nil }
-	approver := redact.NewCommitteeStatePolicy(dc.db, warpSet, networkID, sourceChainID, 2, 3)
-
-	// Vote-gated forge.
-	forger := redact.NewForger(approver, tk)
+	// Vote-gated forge: the node approves the proposal once the proof checks.
+	forger := redact.NewForger(redact.NewApprovedProposal(sp), tk)
 	rPrime, err := forger.Forge(ctx, sp, blob, r, blobPrime)
 	require.NoError(err)
 	require.True(chameleon.Verify(hk, blobPrime, rPrime, digest), "CH(blob', r') must equal D")
@@ -378,7 +371,7 @@ func TestChameleonRedactStoredEnforcesOpening(t *testing.T) {
 // TestChameleonForgeRejectedWithoutVote covers the negative gate cases.
 func TestChameleonForgeRejectedWithoutVote(t *testing.T) {
 	require := require.New(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(err)
@@ -396,34 +389,19 @@ func TestChameleonForgeRejectedWithoutVote(t *testing.T) {
 		PChainHeight: 1,
 	}
 
-	networkID := constants.UnitTestID
-	sourceChainID := ids.GenerateTestID()
-	ws, byIndex := buildCommittee(t, 3)
-	warpSet := func(context.Context, uint64) (validators.WarpSet, error) { return ws, nil }
-
-	// (a) No proof stored -> no vote -> no forge.
-	noProofDB := rawdb.NewMemoryDatabase()
-	noVote := redact.NewForger(redact.NewCommitteeStatePolicy(noProofDB, warpSet, networkID, sourceChainID, 2, 3), tk)
+	// (a) The vote is for another proposal -> no forge.
+	other := *sp
+	other.ID = crypto.Keccak256Hash([]byte("deposit-2"))
+	noVote := redact.NewForger(redact.NewApprovedProposal(&other), tk)
 	_, err = noVote.Forge(ctx, sp, blob, r, blobPrime)
 	require.ErrorIs(err, redact.ErrForgeNotApproved)
 
-	// (b) Proof signed by only 1 of 3 -> below the 2/3 quorum -> rejected.
-	lowDB := rawdb.NewMemoryDatabase()
-	low := signStateProof(t, networkID, sourceChainID, sp, byIndex, 0)
-	lowBytes, err := low.Bytes()
-	require.NoError(err)
-	require.NoError(redact.WriteStateRedactionProof(lowDB, sp.Hash(), lowBytes))
-	belowQuorum := redact.NewForger(redact.NewCommitteeStatePolicy(lowDB, warpSet, networkID, sourceChainID, 2, 3), tk)
-	_, err = belowQuorum.Forge(ctx, sp, blob, r, blobPrime)
+	// (b) No approver at all -> no forge.
+	_, err = redact.NewForger(nil, tk).Forge(ctx, sp, blob, r, blobPrime)
 	require.ErrorIs(err, redact.ErrForgeNotApproved)
 
 	// (c) Approved vote, but a replacement blob other than the approved one.
-	okDB := rawdb.NewMemoryDatabase()
-	ok := signStateProof(t, networkID, sourceChainID, sp, byIndex, 0, 1, 2)
-	okBytes, err := ok.Bytes()
-	require.NoError(err)
-	require.NoError(redact.WriteStateRedactionProof(okDB, sp.Hash(), okBytes))
-	approved := redact.NewForger(redact.NewCommitteeStatePolicy(okDB, warpSet, networkID, sourceChainID, 2, 3), tk)
+	approved := redact.NewForger(redact.NewApprovedProposal(sp), tk)
 	_, err = approved.Forge(ctx, sp, blob, r, []byte("a different blob"))
 	require.ErrorIs(err, redact.ErrForgeBlobMismatch)
 

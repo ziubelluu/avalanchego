@@ -9,13 +9,14 @@ package redactabledeposit
 
 import (
 	"bytes"
-	_ "embed"
 	"encoding/hex"
 	"errors"
 	"strings"
 
 	"github.com/ava-labs/libevm/accounts/abi"
 	"github.com/ava-labs/libevm/common"
+
+	_ "embed"
 
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/chameleon"
 )

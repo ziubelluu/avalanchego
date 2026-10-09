@@ -22,7 +22,7 @@ func TestValidParentLinkNewLink(t *testing.T) {
 	t.Parallel()
 
 	parent := sealedHeader()
-	require.True(t, ValidParentLink(context.Background(), NewLink(parent), parent))
+	require.True(t, ValidParentLinkWithPolicy(t.Context(), NewLink(parent), parent, DefaultPolicy))
 }
 
 // Redacted parent: the child still points to the original hash (old link).
@@ -36,7 +36,7 @@ func TestValidParentLinkOldLinkAfterRedaction(t *testing.T) {
 	parent.TxHash = common.Hash{0x12, 0x34} // simulate the redaction
 
 	require.NotEqual(t, childParentHash, NewLink(parent)) // new link is broken
-	require.True(t, ValidParentLinkWithPolicy(context.Background(), childParentHash, parent, AllowAllForTesting))
+	require.True(t, ValidParentLinkWithPolicy(t.Context(), childParentHash, parent, AllowAllForTesting))
 }
 
 // With no policy set the old link of a redacted parent is not accepted, the
@@ -49,8 +49,8 @@ func TestValidParentLinkDefaultRejectsOldLink(t *testing.T) {
 
 	parent.TxHash = common.Hash{0x12, 0x34}
 
-	require.False(t, ValidParentLink(context.Background(), childParentHash, parent))
-	require.True(t, ValidParentLink(context.Background(), NewLink(parent), parent))
+	require.False(t, ValidParentLinkWithPolicy(t.Context(), childParentHash, parent, DefaultPolicy))
+	require.True(t, ValidParentLinkWithPolicy(t.Context(), NewLink(parent), parent, DefaultPolicy))
 }
 
 // A hash that matches neither link must be rejected.
@@ -58,7 +58,7 @@ func TestValidParentLinkWrongHash(t *testing.T) {
 	t.Parallel()
 
 	parent := sealedHeader()
-	require.False(t, ValidParentLink(context.Background(), common.Hash{0xde, 0xad}, parent))
+	require.False(t, ValidParentLinkWithPolicy(t.Context(), common.Hash{0xde, 0xad}, parent, DefaultPolicy))
 }
 
 // A rejecting policy blocks the old link, but the new link is always fine.
@@ -70,6 +70,6 @@ func TestValidParentLinkWithPolicyReject(t *testing.T) {
 
 	parent.TxHash = common.Hash{0x12, 0x34}
 
-	require.False(t, ValidParentLinkWithPolicy(context.Background(), childParentHash, parent, rejectPolicy{}))
-	require.True(t, ValidParentLinkWithPolicy(context.Background(), NewLink(parent), parent, rejectPolicy{}))
+	require.False(t, ValidParentLinkWithPolicy(t.Context(), childParentHash, parent, rejectPolicy{}))
+	require.True(t, ValidParentLinkWithPolicy(t.Context(), NewLink(parent), parent, rejectPolicy{}))
 }

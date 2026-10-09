@@ -172,7 +172,7 @@ func Hash(hk PublicKey, m []byte) (digest, rs []byte, err error) {
 	if hk.y == nil {
 		return nil, nil, errNoPublicKey
 	}
-	M := toPoint(m)
+	mp := toPoint(m)
 
 	var rho, k1, e2, s2 *big.Int
 	for _, p := range []**big.Int{&rho, &k1, &e2, &s2} {
@@ -182,13 +182,13 @@ func Hash(hk PublicKey, m []byte) (digest, rs []byte, err error) {
 	}
 
 	c1 := mul(g, rho)
-	c2 := M.Add(mul(hk.y, rho))
+	c2 := mp.Add(mul(hk.y, rho))
 
 	u11 := mul(g, k1)
 	u12 := mul(hk.y, k1)
 	u2 := mul(g, s2).Add(mulNeg(hk.y, e2))
 
-	e, err := challenge(hk.y, c1, c2, M, u11, u12, u2)
+	e, err := challenge(hk.y, c1, c2, mp, u11, u12, u2)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -214,13 +214,13 @@ func Verify(hk PublicKey, m, rs, digest []byte) bool {
 	if !ok {
 		return false
 	}
-	M := toPoint(m)
+	mp := toPoint(m)
 
 	u11 := mul(g, s1).Add(mulNeg(c1, e1))
-	u12 := mul(hk.y, s1).Add(mulNeg(c2.Sub(M), e1))
+	u12 := mul(hk.y, s1).Add(mulNeg(c2.Sub(mp), e1))
 	u2 := mul(g, s2).Add(mulNeg(hk.y, e2))
 
-	e, err := challenge(hk.y, c1, c2, M, u11, u12, u2)
+	e, err := challenge(hk.y, c1, c2, mp, u11, u12, u2)
 	if err != nil {
 		return false
 	}
@@ -246,7 +246,7 @@ func Forge(tk Trapdoor, m, rs, mPrime, digest []byte) (rsPrime []byte, err error
 		return nil, errBadOpening
 	}
 	c1, c2, _ := splitDigest(digest)
-	M := toPoint(mPrime)
+	mp := toPoint(mPrime)
 
 	var k2, e1, s1 *big.Int
 	for _, p := range []**big.Int{&k2, &e1, &s1} {
@@ -256,10 +256,10 @@ func Forge(tk Trapdoor, m, rs, mPrime, digest []byte) (rsPrime []byte, err error
 	}
 
 	u11 := mul(g, s1).Add(mulNeg(c1, e1))
-	u12 := mul(tk.y, s1).Add(mulNeg(c2.Sub(M), e1))
+	u12 := mul(tk.y, s1).Add(mulNeg(c2.Sub(mp), e1))
 	u2 := mul(g, k2)
 
-	e, err := challenge(tk.y, c1, c2, M, u11, u12, u2)
+	e, err := challenge(tk.y, c1, c2, mp, u11, u12, u2)
 	if err != nil {
 		return nil, err
 	}

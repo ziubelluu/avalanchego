@@ -54,7 +54,7 @@ func TestCommitteePolicyApproves(t *testing.T) {
 	t.Parallel()
 
 	policy, parent := setupApprovedPolicy(t, 2, 3)
-	require.True(t, policy.Approved(context.Background(), parent))
+	require.True(t, policy.Approved(t.Context(), parent))
 }
 
 // No stored proof -> not approved.
@@ -67,7 +67,7 @@ func TestCommitteePolicyNoProof(t *testing.T) {
 		return validators.WarpSet{}, nil
 	}
 	policy := NewCommitteePolicy(db, warpSet, constants.UnitTestID, proofSourceChainID, 2, 3)
-	require.False(t, policy.Approved(context.Background(), parent))
+	require.False(t, policy.Approved(t.Context(), parent))
 }
 
 // A proof whose NewTxHash does not match the body in the header is rejected
@@ -89,7 +89,7 @@ func TestCommitteePolicyWrongBodyBinding(t *testing.T) {
 
 	warpSet := func(_ context.Context, _ uint64) (validators.WarpSet, error) { return ws, nil }
 	policy := NewCommitteePolicy(db, warpSet, constants.UnitTestID, proofSourceChainID, 2, 3)
-	require.False(t, policy.Approved(context.Background(), parent))
+	require.False(t, policy.Approved(t.Context(), parent))
 }
 
 // If the validator set at the proposal height is no longer queryable, the
@@ -112,7 +112,7 @@ func TestCommitteePolicyHeightNotQueryable(t *testing.T) {
 		return validators.WarpSet{}, errors.New("validator set pruned at height")
 	}
 	policy := NewCommitteePolicy(db, warpSet, constants.UnitTestID, proofSourceChainID, 2, 3)
-	require.False(t, policy.Approved(context.Background(), parent))
+	require.False(t, policy.Approved(t.Context(), parent))
 }
 
 // A valid proof that does not reach the quorum is rejected.
@@ -132,7 +132,7 @@ func TestCommitteePolicyBelowQuorum(t *testing.T) {
 
 	warpSet := func(_ context.Context, _ uint64) (validators.WarpSet, error) { return ws, nil }
 	policy := NewCommitteePolicy(db, warpSet, constants.UnitTestID, proofSourceChainID, 2, 3)
-	require.False(t, policy.Approved(context.Background(), parent))
+	require.False(t, policy.Approved(t.Context(), parent))
 }
 
 // signStateProofFor signs a StateProposal with the given committee members.
@@ -189,7 +189,7 @@ func TestCommitteePolicyApprovesStateProof(t *testing.T) {
 	t.Parallel()
 
 	policy, parent := setupStatePolicy(t, nil, 0, 1, 2)
-	require.True(t, policy.Approved(context.Background(), parent))
+	require.True(t, policy.Approved(t.Context(), parent))
 }
 
 // A deposit proof signed by 1 of 3 doesn't reach the 2/3 quorum.
@@ -197,7 +197,7 @@ func TestCommitteePolicyStateProofBelowQuorum(t *testing.T) {
 	t.Parallel()
 
 	policy, parent := setupStatePolicy(t, nil, 0)
-	require.False(t, policy.Approved(context.Background(), parent))
+	require.False(t, policy.Approved(t.Context(), parent))
 }
 
 // A deposit proof for some other block can't be used for this one.
@@ -206,7 +206,7 @@ func TestCommitteePolicyStateProofOtherBlock(t *testing.T) {
 
 	other := common.Hash{0x0b, 0xad}
 	policy, parent := setupStatePolicy(t, &other, 0, 1, 2)
-	require.False(t, policy.Approved(context.Background(), parent))
+	require.False(t, policy.Approved(t.Context(), parent))
 }
 
 // The bytes of one kind of proof must not decode as the other kind.

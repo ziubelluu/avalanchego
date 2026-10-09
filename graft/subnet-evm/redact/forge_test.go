@@ -5,7 +5,6 @@ package redact
 
 import (
 	"context"
-	"encoding/hex"
 	"testing"
 
 	"github.com/ava-labs/libevm/crypto"
@@ -18,22 +17,11 @@ type fixedApprover struct{ ok bool }
 
 func (a fixedApprover) ApprovedState(context.Context, *StateProposal) bool { return a.ok }
 
-// NewForgerFromEnv loads the trapdoor from a local secret and refuses to build
-// when the secret is missing.
-func TestNewForgerFromEnv(t *testing.T) {
-	const envVar = "REDACT_TRAPDOOR_FORGE_TEST"
-
+// With the vote approved the forger makes a collision; without it, nothing.
+func TestForgerNeedsApproval(t *testing.T) {
 	hk, tk, err := chameleon.KeyGen()
 	require.NoError(t, err)
-
-	// No secret in the environment -> cannot build a forger.
-	_, err = NewForgerFromEnv(fixedApprover{ok: true}, envVar)
-	require.Error(t, err)
-
-	// With the secret set, the forger builds and can forge an approved redaction.
-	t.Setenv(envVar, hex.EncodeToString(tk.Bytes()))
-	forger, err := NewForgerFromEnv(fixedApprover{ok: true}, envVar)
-	require.NoError(t, err)
+	forger := NewForger(fixedApprover{ok: true}, tk)
 
 	blob := []byte("original content")
 	digest, r, err := chameleon.Hash(hk, blob)
@@ -41,7 +29,10 @@ func TestNewForgerFromEnv(t *testing.T) {
 	blobPrime := []byte{}
 	sp := &StateProposal{NewBlobHash: crypto.Keccak256Hash(blobPrime), Digest: digest}
 
-	rPrime, err := forger.Forge(context.Background(), sp, blob, r, blobPrime)
+	rPrime, err := forger.Forge(t.Context(), sp, blob, r, blobPrime)
 	require.NoError(t, err)
 	require.True(t, chameleon.Verify(hk, blobPrime, rPrime, digest))
+
+	_, err = NewForger(fixedApprover{ok: false}, tk).Forge(t.Context(), sp, blob, r, blobPrime)
+	require.ErrorIs(t, err, ErrForgeNotApproved)
 }

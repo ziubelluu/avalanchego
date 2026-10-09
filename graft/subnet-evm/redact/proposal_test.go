@@ -22,7 +22,8 @@ func sampleProposal() *Proposal {
 
 func TestProposalHashDeterministic(t *testing.T) {
 	t.Parallel()
-	require.Equal(t, sampleProposal().Hash(), sampleProposal().Hash())
+	a, b := sampleProposal(), sampleProposal()
+	require.Equal(t, a.Hash(), b.Hash())
 }
 
 // Changing any field changes the hash.

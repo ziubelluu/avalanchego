@@ -4,11 +4,12 @@
 package chameleonhash
 
 import (
-	_ "embed"
 	"errors"
 	"fmt"
 
 	"github.com/ava-labs/libevm/common"
+
+	_ "embed"
 
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/precompile/contract"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/chameleon"

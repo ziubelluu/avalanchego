@@ -5,7 +5,6 @@ package core
 
 import (
 	"bytes"
-	"context"
 	"testing"
 
 	"github.com/ava-labs/libevm/core/rawdb"
@@ -15,7 +14,6 @@ import (
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/chameleon"
 	"github.com/ava-labs/avalanchego/graft/subnet-evm/redact/redactabledeposit"
-	"github.com/ava-labs/avalanchego/snow/validators"
 )
 
 // depositRedaction does what the node does for a deposit: builds the proposal,
@@ -58,14 +56,11 @@ func depositRedactionWith(t *testing.T, committee *testCommittee, approved, appl
 	proofBytes, err := proof.Bytes()
 	require.NoError(err)
 
-	// The forge only needs the vote, checked through the per-proposal proof.
-	require.NoError(redact.WriteStateRedactionProof(dc.db, sp.Hash(), proofBytes))
-	warpSet := func(context.Context, uint64) (validators.WarpSet, error) { return committee.ws, nil }
-	approver := redact.NewCommitteeStatePolicy(dc.db, warpSet, committee.networkID, committee.sourceChainID, 2, 3)
-	rPrime, err := redact.NewForger(approver, tk).Forge(context.Background(), sp, blob, r, applied)
+	// The forger takes the vote for granted here: what matters is what the
+	// chain does with the result.
+	rPrime, err := redact.NewForger(redact.NewApprovedProposal(sp), tk).Forge(t.Context(), sp, blob, r, applied)
 	if err != nil {
-		// the forger refuses (no quorum, or content not the approved one):
-		// forge anyway, the point is to test what the chain does with it
+		// the forger refuses (content not the approved one): forge anyway
 		rPrime, err = chameleon.Forge(tk, blob, r, applied, digest)
 		require.NoError(err)
 	}

@@ -10,7 +10,6 @@ import (
 	"os"
 	"testing"
 
-	ethereum "github.com/ava-labs/libevm"
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/crypto"
@@ -26,6 +25,7 @@ import (
 	"github.com/ava-labs/avalanchego/utils"
 
 	sim "github.com/ava-labs/avalanchego/graft/subnet-evm/ethclient/simulated"
+	ethereum "github.com/ava-labs/libevm"
 )
 
 func TestMain(m *testing.M) {
@@ -114,9 +114,9 @@ func TestStoreCommitsDigestOffStateBlob(t *testing.T) {
 	require.NotEmpty(receipt.Logs)
 	log := receipt.Logs[0]
 	require.Equal(depositAddr, log.Address)
-	require.Equal(id, common.Hash(log.Topics[1]), "indexed id topic")
-	ev, err := redactabledeposit.UnpackDepositedEventData(log.Data)
-	require.NoError(err)
+	require.Equal(id, log.Topics[1], "indexed id topic")
+	var ev struct{ Digest []byte }
+	require.NoError(redactabledeposit.ABI.UnpackIntoInterface(&ev, "Deposited", log.Data))
 	require.Equal(digest, ev.Digest)
 	require.False(bytes.Contains(log.Data, blob), "blob must not be in the event/receipt")
 	require.False(bytes.Contains(log.Data, r), "randomness must not be in the event/receipt")

@@ -36,11 +36,6 @@ var DefaultPolicy Policy = rejectAll{}
 // about who approved the redaction. Never set it on a real node.
 var AllowAllForTesting Policy = allowAll{}
 
-// ValidParentLink checks the child -> parent link with the default policy.
-func ValidParentLink(ctx context.Context, childParentHash common.Hash, parent *ethtypes.Header) bool {
-	return ValidParentLinkWithPolicy(ctx, childParentHash, parent, DefaultPolicy)
-}
-
 // ValidParentLinkWithPolicy is valid if the child points to the normal hash
 // (new link), or to the old link when the parent was redacted and the policy
 // approves it.

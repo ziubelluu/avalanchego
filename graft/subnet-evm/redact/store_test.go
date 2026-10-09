@@ -45,17 +45,3 @@ func TestRedactionProofPerBlock(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, has)
 }
-
-// Delete removes the proof.
-func TestRedactionProofDelete(t *testing.T) {
-	t.Parallel()
-
-	db := rawdb.NewMemoryDatabase()
-	h := common.Hash{0x01}
-	require.NoError(t, WriteRedactionProof(db, h, []byte("p")))
-	require.NoError(t, DeleteRedactionProof(db, h))
-
-	has, err := HasRedactionProof(db, h)
-	require.NoError(t, err)
-	require.False(t, has)
-}

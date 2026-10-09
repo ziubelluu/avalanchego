@@ -31,21 +31,10 @@ type Forger struct {
 }
 
 // NewForger builds a Forger from the committee approver and the trapdoor.
-// The trapdoor comes from a local secret (see chameleon.LoadTrapdoorEnv), never
-// from chain.
+// The trapdoor comes from a local secret (a file or an env var), never from
+// chain.
 func NewForger(approver StateApprover, trapdoor chameleon.Trapdoor) *Forger {
 	return &Forger{approver: approver, trapdoor: trapdoor}
-}
-
-// NewForgerFromEnv is like NewForger but loads the trapdoor from an env var.
-// It fails if the var is missing, so only the authority's node (which sets it)
-// can forge.
-func NewForgerFromEnv(approver StateApprover, envVar string) (*Forger, error) {
-	tk, err := chameleon.LoadTrapdoorEnv(envVar)
-	if err != nil {
-		return nil, err
-	}
-	return NewForger(approver, tk), nil
 }
 
 // Forge returns r' so that (blobPrime, r') opens the digest of [sp] like

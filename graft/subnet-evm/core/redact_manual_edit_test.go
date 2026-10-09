@@ -4,7 +4,6 @@
 package core
 
 import (
-	"context"
 	"math/big"
 	"testing"
 
@@ -22,7 +21,7 @@ import (
 	ethparams "github.com/ava-labs/libevm/params"
 )
 
-// Build a small chain, redact one block's body and check 
+// Build a small chain, redact one block's body and check
 // that the link to its child still validates through the old link.
 func TestManualEditValidatesViaOldLink(t *testing.T) {
 	var (
@@ -78,5 +77,5 @@ func TestManualEditValidatesViaOldLink(t *testing.T) {
 
 	// And the dual-link validation accepts the redacted parent. The test is
 	// about the link, not about who approved, so any redaction is allowed.
-	require.True(t, redact.ValidParentLinkWithPolicy(context.Background(), child.ParentHash(), redacted, redact.AllowAllForTesting))
+	require.True(t, redact.ValidParentLinkWithPolicy(t.Context(), child.ParentHash(), redacted, redact.AllowAllForTesting))
 }
