@@ -26,6 +26,7 @@ import (
 
 var (
 	errNoTrapdoor    = errors.New("chameleon: trapdoor is not set")
+	errNoPublicKey   = errors.New("chameleon: public key is not set")
 	errBadRandomness = errors.New("chameleon: malformed randomness")
 	errBadDigest     = errors.New("chameleon: malformed digest")
 	errBadOpening    = errors.New("chameleon: the opening does not verify")
@@ -49,9 +50,15 @@ func (tk Trapdoor) PublicKey() PublicKey {
 	return PublicKey{y: tk.y}
 }
 
-// randScalar picks a random number in [0, q-1].
+// randScalar picks a random number in [1, q-1]. Zero is left out: as an
+// ElGamal randomness it would make c1 the point at infinity, which nobody
+// accepts.
 func randScalar() (*big.Int, error) {
-	return rand.Int(rand.Reader, Order)
+	k, err := rand.Int(rand.Reader, new(big.Int).Sub(Order, big.NewInt(1)))
+	if err != nil {
+		return nil, err
+	}
+	return k.Add(k, big.NewInt(1)), nil
 }
 
 // mul is p^k. k is reduced mod q first; k = 0 gives the identity.
@@ -150,11 +157,10 @@ func challenge(y, c1, c2, m, u11, u12, u2 *blst.P1) (*big.Int, error) {
 
 // KeyGen picks a random x in [1, q-1] and returns y = g^x with it.
 func KeyGen() (hk PublicKey, tk Trapdoor, err error) {
-	x, err := rand.Int(rand.Reader, new(big.Int).Sub(Order, big.NewInt(1)))
+	x, err := randScalar()
 	if err != nil {
 		return PublicKey{}, Trapdoor{}, err
 	}
-	x.Add(x, big.NewInt(1))
 	y := mul(g, x)
 	return PublicKey{y: y}, Trapdoor{x: x, y: y}, nil
 }
@@ -164,7 +170,7 @@ func KeyGen() (hk PublicKey, tk Trapdoor, err error) {
 // is simulated with a random (e2, s2).
 func Hash(hk PublicKey, m []byte) (digest, rs []byte, err error) {
 	if hk.y == nil {
-		return nil, nil, errBadDigest
+		return nil, nil, errNoPublicKey
 	}
 	M := toPoint(m)
 

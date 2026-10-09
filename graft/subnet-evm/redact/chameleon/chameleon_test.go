@@ -6,6 +6,7 @@ package chameleon
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"math/big"
 	"testing"
 
@@ -347,5 +348,13 @@ func TestOrder(t *testing.T) {
 	}
 	if !Order.ProbablyPrime(32) {
 		t.Fatal("Order is not prime")
+	}
+}
+
+// Hashing with an empty key is an error of its own, not a digest problem.
+func TestHashNeedsKey(t *testing.T) {
+	_, _, err := Hash(PublicKey{}, []byte("blob"))
+	if !errors.Is(err, errNoPublicKey) {
+		t.Fatalf("got %v, want errNoPublicKey", err)
 	}
 }
